@@ -102,28 +102,57 @@ def _dow30() -> list[str]:
         "MRK","MSFT","NKE","PG","TRV","UNH","V","VZ","WBA","WMT",
     ])
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=False)
 def _all_us_stocks() -> list[str]:
     """
-    Fetch every SEC-registered US stock ticker from SEC EDGAR (free, official).
-    Covers ~10,000 companies. Penny stocks are filtered later by min_price.
+    Fetch all US stock tickers from NASDAQ trader directory (official, free).
+    Returns ~7,000 real stocks — ETFs and test issues excluded.
+    Raises on failure so st.cache_data does NOT cache an empty result.
     """
-    try:
-        r = _requests.get(
-            "https://www.sec.gov/files/company_tickers.json",
-            headers={"User-Agent": "political-disclosure-tracker/1.0 (public data)"},
-            timeout=20,
-        )
-        r.raise_for_status()
-        data = r.json()
-        tickers = sorted(set(
-            v["ticker"].upper().strip()
-            for v in data.values()
-            if v.get("ticker") and len(v["ticker"]) <= 5
-        ))
-        return tickers
-    except Exception:
-        return []
+    _h = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+
+    def _parse_nasdaq(text: str) -> list[str]:
+        out = []
+        for line in text.strip().split("\n")[1:]:  # skip header
+            p = line.split("|")
+            if len(p) < 7:
+                continue
+            sym, test, etf = p[0].strip(), p[3].strip(), p[6].strip()
+            if test == "Y" or etf == "Y":
+                continue
+            if sym and len(sym) <= 5 and not sym.startswith("$"):
+                out.append(sym.upper())
+        return out
+
+    def _parse_other(text: str) -> list[str]:
+        out = []
+        for line in text.strip().split("\n")[1:]:
+            p = line.split("|")
+            if len(p) < 7:
+                continue
+            sym, etf, test = p[0].strip(), p[4].strip(), p[6].strip()
+            if test == "Y" or etf == "Y":
+                continue
+            if sym and len(sym) <= 5 and not sym.startswith("$"):
+                out.append(sym.upper())
+        return out
+
+    r1 = _requests.get(
+        "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
+        headers=_h, timeout=20,
+    )
+    r1.raise_for_status()
+
+    r2 = _requests.get(
+        "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
+        headers=_h, timeout=20,
+    )
+    r2.raise_for_status()
+
+    tickers = sorted(set(_parse_nasdaq(r1.text) + _parse_other(r2.text)))
+    if not tickers:
+        raise ValueError("Ticker list came back empty — unexpected parse error.")
+    return tickers
 
 
 # ── Controls ───────────────────────────────────────────────────────────────────
@@ -142,10 +171,10 @@ with st.expander("Report settings", expanded=True):
 
         if use_all_us:
             st.warning(
-                "⏱️ **First run is slow** — ~10,000 stocks × 2 sec each = 5–6 hours. "
-                "After that every stock is cached and re-runs take under 5 minutes. "
-                "Tip: combine with the **min price $5** and **$300M+ market cap** filters — "
-                "they skip stocks instantly without fetching, cutting the time significantly. "
+                "⏱️ **First run is slow** — ~7,000 stocks × 1-2 sec each = 2–4 hours. "
+                "After that every stock is cached daily and re-runs take under 5 minutes. "
+                "Tip: combine with the **min price $5** and **$300M+ market cap** filters to "
+                "skip small/micro caps instantly — cuts the time significantly. "
                 "Leave this tab open and let it run overnight."
             )
 
@@ -189,15 +218,26 @@ with st.expander("Report settings", expanded=True):
 
     if use_all_us:
         with st.spinner("Loading full US stock list from NASDAQ directory (~7,000 stocks)…"):
-            all_us = _all_us_stocks()
-        if all_us:
-            combined.update(all_us)
-            st.success(f"Loaded {len(all_us):,} tickers from SEC EDGAR (full US market).")
-        else:
-            fetch_errors.append("Full US stock list could not be fetched — check your internet connection.")
+            try:
+                all_us = _all_us_stocks()
+                combined.update(all_us)
+                st.success(f"Loaded {len(all_us):,} tickers from NASDAQ directory (ETFs excluded).")
+            except Exception as _e:
+                fetch_errors.append(
+                    f"Full US stock list could not be fetched: {_e}. "
+                    "Click **Clear ticker cache** below and try again."
+                )
+                all_us = []
 
     for err in fetch_errors:
         st.warning(err)
+
+    if st.button("🔄 Clear ticker cache (force re-fetch lists)", key="clear_ticker_cache"):
+        _all_us_stocks.clear()
+        _sp500.clear()
+        _nasdaq100.clear()
+        st.success("Ticker cache cleared — uncheck and re-check your universe to reload.")
+        st.rerun()
 
     candidate_tickers = sorted(t for t in combined if t not in ("N/A", "--", ""))
 

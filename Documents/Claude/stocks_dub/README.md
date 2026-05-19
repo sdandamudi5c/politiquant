@@ -119,7 +119,7 @@ DAILY_UNIVERSE = ["AAPL", "MSFT"]  # custom list
 | House disclosures | disclosures-clerk.house.gov | Free |
 | Senate disclosures | efts.senate.gov | Free |
 | Stock prices & fundamentals | Yahoo Finance via yfinance | Free |
-| All US stock tickers | SEC EDGAR company_tickers.json | Free |
+| All US stock tickers | NASDAQ trader directory (nasdaqlisted + otherlisted) | Free |
 | S&P 500 / NASDAQ 100 lists | Wikipedia | Free |
 
 ---
