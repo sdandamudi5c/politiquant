@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+cached_trades.json
+filing_index_cache.json
+price_cache.json
+fundamentals_cache.json
+email_config.json
+score_history.json
+*.pyc
+.DS_Store
