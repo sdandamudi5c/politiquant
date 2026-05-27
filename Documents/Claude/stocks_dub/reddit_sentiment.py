@@ -1,44 +1,42 @@
 """
-Reddit sentiment signal — free via PRAW (Reddit API).
+Reddit sentiment signal — no API key needed.
 
-Tracks mention frequency and sentiment of a stock ticker across:
+Uses Reddit's public JSON endpoints (available on every subreddit without
+authentication). No PRAW, no OAuth, no app registration required.
+
+Tracks mention frequency and sentiment across:
   - r/wallstreetbets  (retail speculation, high-beta signal)
   - r/investing       (more conservative retail investors)
   - r/stocks          (general stock discussion)
 
 Signal logic:
-  - Count posts/comments mentioning the ticker in the last 48h
-  - Score title sentiment with keyword scoring (no model needed)
+  - Search each subreddit for the ticker symbol (last 7 days)
+  - Keyword sentiment scoring on post titles
   - High mentions + positive tone → bullish retail signal
   - High mentions + negative tone → bearish retail signal
-  - Going viral (spike vs 7-day avg) → noteworthy catalyst
 
 Score range: -4 to +5 (intentionally modest — retail sentiment is noisy)
 
-Setup: create a free Reddit app at https://www.reddit.com/prefs/apps
-  Type: "script"   Name: anything   redirect_uri: http://localhost:8080
-Then add to api_keys.json:
-  "reddit_client_id": "your_client_id",
-  "reddit_client_secret": "your_client_secret"
-
-Falls back gracefully (score_mod=0, no error shown) if keys not configured.
-
-Cache: 4-hour TTL (Reddit rate limit: 60 req/min on free tier).
+Cache: 4-hour TTL.
 """
 
-import json
-import os
 import re
+import time
 from datetime import datetime, timedelta
+
+import requests
 
 import cache_db as _cdb
 
-_DIR       = os.path.dirname(os.path.abspath(__file__))
-_KEYS_FILE = os.path.join(_DIR, "api_keys.json")
-_NAMESPACE = "reddit"
-_CACHE_TTL = 4 * 3600   # 4 hours
-
+_NAMESPACE  = "reddit"
+_CACHE_TTL  = 4 * 3600   # 4 hours
 _SUBREDDITS = ["wallstreetbets", "investing", "stocks"]
+
+# Reddit requires a descriptive User-Agent — generic ones get rate-limited
+_HEADERS = {
+    "User-Agent": "PolitiQuant/1.0 (open-source stock research; no commercial use)",
+    "Accept": "application/json",
+}
 
 # Keyword sentiment scoring
 _BULL_WORDS = {
@@ -53,25 +51,41 @@ _BEAR_WORDS = {
 }
 
 
-def _get_keys() -> "tuple[str, str]":
-    """Return (client_id, client_secret) from api_keys.json, or ('', '')."""
-    try:
-        with open(_KEYS_FILE) as f:
-            d = json.load(f)
-        return d.get("reddit_client_id", ""), d.get("reddit_client_secret", "")
-    except Exception:
-        return "", ""
-
-
 def _score_text(text: str) -> float:
-    """Simple keyword sentiment: +1 per bull word, -1 per bear word. Range: float."""
+    """Keyword sentiment: +1 per bull word, -1 per bear word → normalised -1 to +1."""
     words = set(re.findall(r"\b\w+\b", text.lower()))
-    bull = len(words & _BULL_WORDS)
-    bear = len(words & _BEAR_WORDS)
+    bull  = len(words & _BULL_WORDS)
+    bear  = len(words & _BEAR_WORDS)
     total = bull + bear
     if total == 0:
         return 0.0
-    return round((bull - bear) / total, 2)   # -1 to +1
+    return round((bull - bear) / total, 2)
+
+
+def _search_subreddit(subreddit: str, ticker: str) -> list:
+    """
+    Search a subreddit for ticker mentions using the public JSON search API.
+    Returns list of post dicts. No auth required.
+    """
+    url = f"https://www.reddit.com/r/{subreddit}/search.json"
+    params = {
+        "q":           ticker,
+        "restrict_sr": "on",
+        "sort":        "new",
+        "t":           "week",
+        "limit":       25,
+    }
+    try:
+        resp = requests.get(url, params=params, headers=_HEADERS, timeout=10)
+        if resp.status_code == 429:   # rate limited — back off
+            time.sleep(2)
+            resp = requests.get(url, params=params, headers=_HEADERS, timeout=10)
+        if resp.status_code != 200:
+            return []
+        posts = resp.json().get("data", {}).get("children", [])
+        return [p["data"] for p in posts if p.get("data")]
+    except Exception:
+        return []
 
 
 def fetch_reddit_sentiment(ticker: str) -> dict:
@@ -81,15 +95,15 @@ def fetch_reddit_sentiment(ticker: str) -> dict:
     Returns
     -------
     {
-        "ticker":         str,
-        "mention_count":  int,     # posts/comments mentioning ticker (last 48h)
-        "sentiment_avg":  float,   # avg keyword sentiment (-1 to +1)
-        "subreddit_counts": dict,  # {subreddit: count}
-        "top_posts":      list,    # [{title, score, url, sentiment}]
-        "trend":          str,     # "viral" | "rising" | "normal" | "quiet"
-        "score_mod":      int,     # -4 to +5
-        "cached_ts":      str,
-        "error":          None | str,
+        "ticker":           str,
+        "mention_count":    int,     # posts mentioning ticker (last 7 days)
+        "sentiment_avg":    float,   # avg keyword sentiment (-1 to +1)
+        "subreddit_counts": dict,    # {subreddit: count}
+        "top_posts":        list,    # [{title, score, url, sentiment, subreddit}]
+        "trend":            str,     # "viral" | "rising" | "normal" | "quiet"
+        "score_mod":        int,     # -4 to +5
+        "cached_ts":        str,
+        "error":            None | str,
     }
     """
     cached = _cdb.get(_NAMESPACE, ticker) or {}
@@ -108,58 +122,40 @@ def fetch_reddit_sentiment(ticker: str) -> dict:
         "cached_ts": datetime.utcnow().isoformat(), "error": None,
     }
 
-    client_id, client_secret = _get_keys()
-    if not client_id or not client_secret:
-        empty["error"] = "Reddit API keys not configured"
-        return empty   # graceful no-op — don't cache so it retries after setup
-
     try:
-        import praw
-    except ImportError:
-        empty["error"] = "praw not installed: pip install praw"
-        return empty
-
-    try:
-        reddit = praw.Reddit(
-            client_id     = client_id,
-            client_secret = client_secret,
-            user_agent    = f"PolitiQuant/1.0 (stock research tool) ticker={ticker}",
-        )
-
-        cutoff  = datetime.utcnow() - timedelta(hours=48)
-        counts  = {sr: 0 for sr in _SUBREDDITS}
+        cutoff     = datetime.utcnow() - timedelta(days=7)
+        counts     = {sr: 0 for sr in _SUBREDDITS}
         sentiments = []
         top_posts  = []
 
-        # Search each subreddit for ticker mentions
         for sr_name in _SUBREDDITS:
-            try:
-                sr = reddit.subreddit(sr_name)
-                # Search by ticker symbol (exact word match)
-                for post in sr.search(f'"{ticker}"', sort="new", time_filter="week", limit=25):
-                    post_time = datetime.utcfromtimestamp(post.created_utc)
-                    if post_time < cutoff:
-                        continue
+            posts = _search_subreddit(sr_name, ticker)
+            for post in posts:
+                # Filter to posts within the last 7 days
+                created = datetime.utcfromtimestamp(post.get("created_utc", 0))
+                if created < cutoff:
+                    continue
 
-                    # Check ticker appears as a standalone word in title/selftext
-                    combined = f"{post.title} {post.selftext or ''}"
-                    if not re.search(rf"\b{re.escape(ticker)}\b", combined, re.IGNORECASE):
-                        continue
+                # Must contain ticker as a standalone word (not substring)
+                title = post.get("title", "")
+                if not re.search(rf"\b{re.escape(ticker)}\b", title, re.IGNORECASE):
+                    continue
 
-                    counts[sr_name] += 1
-                    sent = _score_text(combined)
-                    sentiments.append(sent)
+                counts[sr_name] += 1
+                sent = _score_text(title)
+                sentiments.append(sent)
 
-                    if len(top_posts) < 5:
-                        top_posts.append({
-                            "title":     post.title[:120],
-                            "score":     post.score,
-                            "url":       f"https://reddit.com{post.permalink}",
-                            "sentiment": sent,
-                            "subreddit": sr_name,
-                        })
-            except Exception:
-                continue
+                if len(top_posts) < 6:
+                    top_posts.append({
+                        "title":     title[:120],
+                        "score":     post.get("score", 0),
+                        "url":       f"https://reddit.com{post.get('permalink', '')}",
+                        "sentiment": sent,
+                        "subreddit": sr_name,
+                    })
+
+            # Small delay between subreddit requests to be polite
+            time.sleep(0.5)
 
         total_mentions = sum(counts.values())
         avg_sentiment  = round(sum(sentiments) / len(sentiments), 2) if sentiments else 0.0
@@ -174,10 +170,10 @@ def fetch_reddit_sentiment(ticker: str) -> dict:
         else:
             trend = "quiet"
 
-        # Score modifier: mentions × sentiment direction
+        # Score modifier: mention volume × sentiment direction
         score_mod = 0
         if total_mentions >= 20 and avg_sentiment > 0.1:
-            score_mod = 5   # viral + positive = strong retail signal
+            score_mod = 5
         elif total_mentions >= 10 and avg_sentiment > 0.1:
             score_mod = 3
         elif total_mentions >= 5 and avg_sentiment > 0.1:
@@ -185,7 +181,7 @@ def fetch_reddit_sentiment(ticker: str) -> dict:
         elif total_mentions >= 3 and avg_sentiment > 0:
             score_mod = 1
         elif total_mentions >= 10 and avg_sentiment < -0.1:
-            score_mod = -4   # viral + negative = warning
+            score_mod = -4
         elif total_mentions >= 5 and avg_sentiment < -0.1:
             score_mod = -2
         elif total_mentions >= 3 and avg_sentiment < -0.1:
