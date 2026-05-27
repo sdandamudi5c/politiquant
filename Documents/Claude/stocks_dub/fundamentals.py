@@ -1,11 +1,9 @@
 """
 Fundamental data fetcher using yfinance (free, no API key).
-Caches results to fundamentals_cache.json (refreshed once per day).
+Caches results in SQLite (cache.db) — refreshed once per day.
 """
 
-import json
 import os
-import tempfile
 import threading
 from datetime import date, datetime, timedelta
 
@@ -13,15 +11,17 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-FUND_CACHE_FILE = "fundamentals_cache.json"
+import cache_db as _cdb
+
 SCREEN_THRESHOLD = 5.0  # percent
 CACHE_VERSION = 8  # bump this whenever new fields are added
+_NAMESPACE = "fundamentals"
+_CACHE_TTL = 24 * 3600   # 24 hours
 
-# Thread-safe cache lock — prevents parallel workers overwriting each other
-_CACHE_LOCK = threading.Lock()
-
-# Module-level in-memory cache — loaded once, avoids repeated full JSON reads
-_MEM_CACHE: dict | None = None
+# Per-process in-memory cache: ticker → result dict
+# Avoids hitting SQLite repeatedly within the same Streamlit session
+_MEM_CACHE: dict = {}
+_MEM_LOCK = threading.Lock()
 
 # Global connection cap — prevents DNS thread exhaustion when many tickers are
 # fetched in parallel.  Each fetch_fundamentals call holds one slot while it
@@ -30,49 +30,26 @@ _MEM_CACHE: dict | None = None
 _MAX_CONCURRENT = 4
 _FETCH_SEMAPHORE = threading.Semaphore(_MAX_CONCURRENT)
 
-_CACHE_DIR = os.path.dirname(os.path.abspath(FUND_CACHE_FILE)) or "."
 
-
-def _load_cache() -> dict:
-    global _MEM_CACHE
-    if _MEM_CACHE is None:
-        with _CACHE_LOCK:
-            if _MEM_CACHE is None:
-                _MEM_CACHE = {}
-                if os.path.exists(FUND_CACHE_FILE):
-                    try:
-                        with open(FUND_CACHE_FILE) as f:
-                            _MEM_CACHE = json.load(f)
-                    except Exception:
-                        # Corrupted cache — start fresh (will rebuild automatically)
-                        _MEM_CACHE = {}
-    return _MEM_CACHE
+def _load_cache(ticker: str) -> "dict | None":
+    with _MEM_LOCK:
+        if ticker in _MEM_CACHE:
+            return _MEM_CACHE[ticker]
+    data = _cdb.get(_NAMESPACE, ticker)
+    if data:
+        with _MEM_LOCK:
+            _MEM_CACHE[ticker] = data
+    return data
 
 
 def _save_cache(ticker: str, result: dict) -> None:
-    """
-    Atomically add/update a single ticker in the cache file.
-    Uses a temp-file + rename so a mid-write kill can't corrupt the cache.
-    Prunes entries older than 48 hours to keep file size manageable.
-    """
-    cache = _load_cache()
-    with _CACHE_LOCK:
-        cache[ticker] = result
-        # Prune stale entries (> 48 h) to cap file size
-        cutoff = (datetime.utcnow() - timedelta(hours=48)).isoformat()
-        cache = {k: v for k, v in cache.items()
-                 if v.get("cached_ts", "9999") >= cutoff}
-        cache[ticker] = result   # keep the entry we just wrote even if brand-new
-        # Atomic write via temp file + rename — safe against mid-write crashes
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", dir=_CACHE_DIR, delete=False, suffix=".tmp"
-            ) as tf:
-                json.dump(cache, tf, indent=2)
-                tmp_path = tf.name
-            os.replace(tmp_path, FUND_CACHE_FILE)
-        except Exception:
-            pass
+    with _MEM_LOCK:
+        _MEM_CACHE[ticker] = result
+    _cdb.set(_NAMESPACE, ticker, result)
+    # Prune SQLite entries older than 48h periodically (1-in-50 chance per write)
+    import random
+    if random.randint(1, 50) == 1:
+        _cdb.delete_old(_NAMESPACE, 48 * 3600)
 
 
 def _cagr(start: float, end: float, years: int) -> float | None:
@@ -99,17 +76,15 @@ def fetch_fundamentals(ticker: str) -> dict:
     Returns a dict with all metrics needed for screening and display.
     Uses daily cache to avoid repeated yfinance calls.
     """
-    cache = _load_cache()
     today = date.today().isoformat()
 
-    cached = cache.get(ticker, {})
-    # Accept cache if fetched within the last 24 hours (not just same calendar day)
+    cached = _load_cache(ticker) or {}
+    # Accept cache if fetched within the last 24 hours
     try:
-        from datetime import datetime as _dt
         _cached_ts = cached.get("cached_ts")
         _fresh = (
             _cached_ts is not None
-            and (_dt.utcnow() - _dt.fromisoformat(_cached_ts)).total_seconds() < 86400
+            and (datetime.utcnow() - datetime.fromisoformat(_cached_ts)).total_seconds() < _CACHE_TTL
             and cached.get("cache_version") == CACHE_VERSION
         )
     except Exception:

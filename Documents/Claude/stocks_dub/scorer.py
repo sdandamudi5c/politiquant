@@ -43,6 +43,7 @@ FACTOR_NAMES = [
     "news_sentiment", "earnings_surprise",
     "short_interest", "macro", "insider", "inst", "sector",
     "breakout", "volume_surge", "earnings_timing", "analyst_revision",
+    "reddit_buzz",   # 30th factor — retail sentiment from WSB/investing/stocks
 ]
 
 
@@ -507,6 +508,23 @@ def _score_internal(fund: dict, pol_buys_30d: int = 0) -> "tuple[float, list[str
         elif _earn_days <= 14:
             _add("earnings_timing", -1,
                  f"📅 Earnings in {_earn_days} days — note upcoming catalyst (−1)")
+
+    # ── Reddit / WallStreetBets buzz (max +5, min -4) ────────────────────────
+    try:
+        from reddit_sentiment import fetch_reddit_sentiment
+        _reddit = fetch_reddit_sentiment(ticker) if (ticker := fund.get("ticker")) else {}
+        _rmod   = _reddit.get("score_mod", 0)
+        _rcount = _reddit.get("mention_count", 0)
+        _rtrend = _reddit.get("trend", "unknown")
+        if _rmod > 0:
+            _trend_str = {"viral": "🔥 Viral", "rising": "📈 Trending"}.get(_rtrend, "📊")
+            _add("reddit_buzz", _rmod,
+                 f"🤳 {_trend_str} on Reddit ({_rcount} mentions, positive) (+{_rmod})")
+        elif _rmod < 0:
+            _add("reddit_buzz", _rmod,
+                 f"🤳 Reddit sentiment negative ({_rcount} mentions) ({_rmod})")
+    except Exception:
+        pass
 
     # Clamp to [0, 100] as a safety net
     return max(0.0, min(100.0, score)), reasons, fp

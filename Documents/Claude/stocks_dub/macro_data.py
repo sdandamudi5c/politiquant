@@ -12,9 +12,12 @@ from datetime import date, timedelta
 
 import requests
 
+import cache_db as _cdb
+
 _DIR        = os.path.dirname(os.path.abspath(__file__))
-_CACHE_FILE = os.path.join(_DIR, "fred_cache.json")
 _KEYS_FILE  = os.path.join(_DIR, "api_keys.json")
+_NAMESPACE  = "fred"
+_CACHE_KEY  = "macro"
 _BASE_URL   = "https://api.stlouisfed.org/fred/series/observations"
 
 # Series to fetch
@@ -54,16 +57,11 @@ def save_api_key(key: str, provider: str = "fred"):
 # ── Fetch ──────────────────────────────────────────────────────────────────────
 
 def _load_cache() -> dict:
-    try:
-        with open(_CACHE_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    return _cdb.get(_NAMESPACE, _CACHE_KEY) or {}
 
 
 def _save_cache(data: dict):
-    with open(_CACHE_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    _cdb.set(_NAMESPACE, _CACHE_KEY, data)
 
 
 def _fetch_series(series_id: str, api_key: str, limit: int = 3) -> list:

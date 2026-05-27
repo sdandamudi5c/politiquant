@@ -13,31 +13,20 @@ Signal logic:
 Cache: 24-hour TTL (trends data is daily, not real-time).
 """
 
-import json
-import os
-import threading
 from datetime import datetime
 
-_DIR        = os.path.dirname(os.path.abspath(__file__))
-_CACHE_FILE = os.path.join(_DIR, "trends_cache.json")
+import cache_db as _cdb
+
+_NAMESPACE  = "trends"
 _CACHE_TTL  = 24 * 3600   # 24 hours
-_LOCK       = threading.Lock()
 
 
-def _load_cache() -> dict:
-    try:
-        with open(_CACHE_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return {}
+def _load_cache(key: str) -> "dict | None":
+    return _cdb.get(_NAMESPACE, key)
 
 
 def _save_cache(key: str, data: dict) -> None:
-    with _LOCK:
-        cache = _load_cache()
-        cache[key] = data
-        with open(_CACHE_FILE, "w") as f:
-            json.dump(cache, f, indent=2)
+    _cdb.set(_NAMESPACE, key, data)
 
 
 def fetch_trends(ticker: str) -> dict:
@@ -58,8 +47,7 @@ def fetch_trends(ticker: str) -> dict:
         "error":        None | str,
     }
     """
-    cache = _load_cache()
-    cached = cache.get(ticker, {})
+    cached = _load_cache(ticker) or {}
     if cached.get("cached_ts"):
         try:
             age = (datetime.utcnow() - datetime.fromisoformat(cached["cached_ts"])).total_seconds()

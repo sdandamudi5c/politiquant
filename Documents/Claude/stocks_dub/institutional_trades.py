@@ -12,21 +12,17 @@ Key signal: multiple well-known institutions ADDING to their position
 = "smart money consensus" which historically predicts outperformance.
 """
 
-import json
-import os
-import tempfile
 import threading
 from datetime import datetime, timedelta
 
 import yfinance as yf
 
-_DIR        = os.path.dirname(os.path.abspath(__file__))
-_CACHE_FILE = os.path.join(_DIR, "institutional_cache.json")
-_CACHE_TTL  = 7 * 24 * 3600   # 7 days
-_LOCK       = threading.Lock()
+import cache_db as _cdb
 
-# Module-level in-memory cache — loaded once, avoids repeated full JSON reads
-_MEM_CACHE: dict | None = None
+_NAMESPACE  = "institutional"
+_CACHE_TTL  = 7 * 24 * 3600   # 7 days
+_MEM_CACHE: dict = {}
+_MEM_LOCK   = threading.Lock()
 
 # Well-known institutions — carry extra weight in scoring
 _TIER1 = {
@@ -38,34 +34,21 @@ _TIER1 = {
 }
 
 
-def _load_cache() -> dict:
-    global _MEM_CACHE
-    if _MEM_CACHE is None:
-        with _LOCK:
-            if _MEM_CACHE is None:
-                _MEM_CACHE = {}
-                if os.path.exists(_CACHE_FILE):
-                    try:
-                        with open(_CACHE_FILE) as f:
-                            _MEM_CACHE = json.load(f)
-                    except Exception:
-                        pass
-    return _MEM_CACHE
+def _load_cache(key: str) -> "dict | None":
+    with _MEM_LOCK:
+        if key in _MEM_CACHE:
+            return _MEM_CACHE[key]
+    data = _cdb.get(_NAMESPACE, key)
+    if data:
+        with _MEM_LOCK:
+            _MEM_CACHE[key] = data
+    return data
 
 
 def _save_cache(key: str, data: dict) -> None:
-    cache = _load_cache()
-    with _LOCK:
-        cache[key] = data
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", dir=_DIR, delete=False, suffix=".tmp"
-            ) as tf:
-                json.dump(cache, tf, indent=2)
-                tmp_path = tf.name
-            os.replace(tmp_path, _CACHE_FILE)
-        except Exception:
-            pass
+    with _MEM_LOCK:
+        _MEM_CACHE[key] = data
+    _cdb.set(_NAMESPACE, key, data)
 
 
 def _is_tier1(name: str) -> bool:
@@ -96,8 +79,7 @@ def fetch_institutional_data(ticker: str) -> dict:
     }
     """
     cache_key = ticker
-    cache = _load_cache()
-    cached = cache.get(cache_key, {})
+    cached = _load_cache(cache_key) or {}
     if cached.get("cached_ts"):
         try:
             age = (datetime.utcnow() - datetime.fromisoformat(cached["cached_ts"])).total_seconds()

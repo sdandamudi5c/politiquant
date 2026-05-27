@@ -24,32 +24,24 @@ Interpretation:
 Cache: 1-hour TTL.
 """
 
-import json
-import os
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 import yfinance as yf
 
-_DIR        = os.path.dirname(os.path.abspath(__file__))
-_CACHE_FILE = os.path.join(_DIR, "sentiment_cache.json")
+import cache_db as _cdb
+
+_NAMESPACE  = "sentiment"
+_CACHE_KEY  = "fear_greed"
 _CACHE_TTL  = 3600   # 1 hour
-_LOCK       = threading.Lock()
 
 
 def _load_cache() -> dict:
-    try:
-        with open(_CACHE_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    return _cdb.get(_NAMESPACE, _CACHE_KEY) or {}
 
 
 def _save_cache(data: dict) -> None:
-    with _LOCK:
-        with open(_CACHE_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+    _cdb.set(_NAMESPACE, _CACHE_KEY, data)
 
 
 def _bulk_download_all() -> dict:

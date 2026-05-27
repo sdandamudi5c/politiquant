@@ -24,17 +24,15 @@ Sector ETF → yfinance sector name mapping:
 Cache: 1-hour TTL (captures intraday moves).
 """
 
-import json
-import os
-import threading
 from datetime import datetime, timedelta
 
 import yfinance as yf
 
-_DIR        = os.path.dirname(os.path.abspath(__file__))
-_CACHE_FILE = os.path.join(_DIR, "sector_cache.json")
+import cache_db as _cdb
+
+_NAMESPACE  = "sector"
+_CACHE_KEY  = "rotation"
 _CACHE_TTL  = 1 * 3600           # 1 hour — captures intraday moves
-_LOCK       = threading.Lock()
 
 # ── Broad SPDR sector ETFs (mapped to yfinance sector names) ──────────────────
 SECTOR_ETFS = {
@@ -140,24 +138,17 @@ SUB_SECTOR_STOCKS = {
     "Cybersecurity":     ["PANW", "CRWD", "FTNT", "ZS", "OKTA", "S", "CYBR", "TENB", "VRNS", "QLYS"],
 }
 
-_STOCKS_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sector_stocks_cache.json")
 _STOCKS_CACHE_TTL  = 1 * 3600   # 1 hour
 
 
 # ── Cache helpers ──────────────────────────────────────────────────────────────
 
 def _load_cache() -> dict:
-    try:
-        with open(_CACHE_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    return _cdb.get(_NAMESPACE, _CACHE_KEY) or {}
 
 
 def _save_cache(data: dict) -> None:
-    with _LOCK:
-        with open(_CACHE_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+    _cdb.set(_NAMESPACE, _CACHE_KEY, data)
 
 
 # ── Core data fetch ────────────────────────────────────────────────────────────
@@ -380,17 +371,11 @@ MOMENTUM_COLOUR = {
 # ── Stock movers fetch ────────────────────────────────────────────────────────
 
 def _load_stocks_cache() -> dict:
-    try:
-        with open(_STOCKS_CACHE_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    return _cdb.get("sector_stocks", "movers") or {}
 
 
 def _save_stocks_cache(data: dict) -> None:
-    with _LOCK:
-        with open(_STOCKS_CACHE_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+    _cdb.set("sector_stocks", "movers", data)
 
 
 def fetch_stock_movers(tickers: list[str]) -> dict[str, dict]:

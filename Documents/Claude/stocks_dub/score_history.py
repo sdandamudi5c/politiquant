@@ -215,36 +215,53 @@ def train_model() -> "dict | None":
     y_clipped = np.clip(y, -50.0, 50.0)
 
     try:
-        from sklearn.model_selection import cross_val_score
+        from sklearn.model_selection import cross_val_score, cross_val_predict
         from sklearn.preprocessing import StandardScaler
         import joblib
 
-        # Scale features for better convergence
-        scaler = StandardScaler()
+        # Scale features
+        scaler   = StandardScaler()
         X_scaled = scaler.fit_transform(X)
 
-        from sklearn.ensemble import RandomForestRegressor
-        from sklearn.model_selection import cross_val_predict
+        # Try XGBoost first (better performance), fall back to Random Forest
+        try:
+            from xgboost import XGBRegressor
+            model_obj = XGBRegressor(
+                n_estimators     = 400,
+                max_depth        = 4,
+                learning_rate    = 0.05,
+                subsample        = 0.8,
+                colsample_bytree = 0.8,
+                min_child_weight = 10,   # regularisation for small financial datasets
+                reg_alpha        = 0.1,  # L1
+                reg_lambda       = 1.0,  # L2
+                random_state     = 42,
+                n_jobs           = -1,
+                verbosity        = 0,
+            )
+            _engine_name = "xgboost"
+        except ImportError:
+            from sklearn.ensemble import RandomForestRegressor
+            model_obj = RandomForestRegressor(
+                n_estimators     = 300,
+                max_depth        = 4,
+                min_samples_leaf = 20,
+                random_state     = 42,
+                n_jobs           = -1,
+            )
+            _engine_name = "random_forest"
 
-        # Random Forest — best CV performance on this dataset
-        rf = RandomForestRegressor(
-            n_estimators     = 300,
-            max_depth        = 4,
-            min_samples_leaf = 20,   # strong regularisation for financial data
-            random_state     = 42,
-            n_jobs           = -1,   # use all CPU cores
-        )
-        rf.fit(X_scaled, y_clipped)
+        model_obj.fit(X_scaled, y_clipped)
 
         # 5-fold CV directional accuracy (more meaningful than R² for stocks)
-        y_cv      = cross_val_predict(rf, X_scaled, y_clipped, cv=5)
+        y_cv      = cross_val_predict(model_obj, X_scaled, y_clipped, cv=5)
         dir_acc   = float(np.mean(np.sign(y_cv) == np.sign(y_clipped)) * 100)
         baseline  = float(np.mean(y_clipped > 0) * 100)
-        cv_scores = cross_val_score(rf, X_scaled, y_clipped, cv=5, scoring="r2")
+        cv_scores = cross_val_score(model_obj, X_scaled, y_clipped, cv=5, scoring="r2")
         cv_r2     = float(np.mean(cv_scores))
 
         # In-sample metrics
-        y_pred    = rf.predict(X_scaled)
+        y_pred    = model_obj.predict(X_scaled)
         residuals = y_clipped - y_pred
         ss_res    = float(np.sum(residuals ** 2))
         ss_tot    = float(np.sum((y_clipped - np.mean(y_clipped)) ** 2))
@@ -254,17 +271,17 @@ def train_model() -> "dict | None":
         # Feature importance — which factors actually predict returns
         importance = [
             {"factor": name, "importance": round(float(imp), 4)}
-            for name, imp in zip(FACTOR_NAMES, rf.feature_importances_)
+            for name, imp in zip(FACTOR_NAMES, model_obj.feature_importances_)
         ]
         importance.sort(key=lambda x: x["importance"], reverse=True)
 
-        # Save sklearn model + scaler to disk
-        joblib.dump({"model": rf, "scaler": scaler}, MODEL_FILE)
+        # Save model + scaler to disk
+        joblib.dump({"model": model_obj, "scaler": scaler}, MODEL_FILE)
 
         tier_stats = _compute_tier_stats(completed)
 
         model = {
-            "engine":             "random_forest",
+            "engine":             _engine_name,
             "factor_names":       FACTOR_NAMES,
             "n_training":         len(completed),
             "r_squared":          round(r2, 4),

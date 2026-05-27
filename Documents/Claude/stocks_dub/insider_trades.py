@@ -8,21 +8,17 @@ Key insight: open-market CEO/CFO PURCHASES are a very strong bullish signal.
 Option exercises and stock awards are excluded — those are compensation, not conviction.
 """
 
-import json
-import os
-import tempfile
 import threading
 from datetime import datetime, timedelta
 
 import yfinance as yf
 
-_DIR        = os.path.dirname(os.path.abspath(__file__))
-_CACHE_FILE = os.path.join(_DIR, "insider_cache.json")
-_CACHE_TTL  = 7 * 24 * 3600   # 7 days in seconds
-_LOCK       = threading.Lock()
+import cache_db as _cdb
 
-# Module-level in-memory cache — loaded once, avoids repeated full JSON reads
-_MEM_CACHE: dict | None = None
+_NAMESPACE  = "insider"
+_CACHE_TTL  = 7 * 24 * 3600   # 7 days in seconds
+_MEM_CACHE: dict = {}
+_MEM_LOCK   = threading.Lock()
 
 # Position importance weights for buy scoring
 _POSITION_WEIGHT = {
@@ -40,34 +36,21 @@ _POSITION_WEIGHT = {
 }
 
 
-def _load_cache() -> dict:
-    global _MEM_CACHE
-    if _MEM_CACHE is None:
-        with _LOCK:
-            if _MEM_CACHE is None:
-                _MEM_CACHE = {}
-                if os.path.exists(_CACHE_FILE):
-                    try:
-                        with open(_CACHE_FILE) as f:
-                            _MEM_CACHE = json.load(f)
-                    except Exception:
-                        pass
-    return _MEM_CACHE
+def _load_cache(ticker: str) -> "dict | None":
+    with _MEM_LOCK:
+        if ticker in _MEM_CACHE:
+            return _MEM_CACHE[ticker]
+    data = _cdb.get(_NAMESPACE, ticker)
+    if data:
+        with _MEM_LOCK:
+            _MEM_CACHE[ticker] = data
+    return data
 
 
 def _save_cache(ticker: str, data: dict) -> None:
-    cache = _load_cache()
-    with _LOCK:
-        cache[ticker] = data
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", dir=_DIR, delete=False, suffix=".tmp"
-            ) as tf:
-                json.dump(cache, tf, indent=2)
-                tmp_path = tf.name
-            os.replace(tmp_path, _CACHE_FILE)
-        except Exception:
-            pass
+    with _MEM_LOCK:
+        _MEM_CACHE[ticker] = data
+    _cdb.set(_NAMESPACE, ticker, data)
 
 
 def _position_weight(position: str) -> int:
@@ -123,8 +106,7 @@ def fetch_insider_trades(ticker: str, days: int = 120) -> dict:
     # ── Check cache ───────────────────────────────────────────────────────────
     # Cache key includes days so different windows don't collide
     cache_key = f"{ticker}_{days}"
-    cache = _load_cache()
-    cached = cache.get(cache_key, {})
+    cached = _load_cache(cache_key) or {}
     if cached.get("cached_ts"):
         try:
             age = (datetime.utcnow() - datetime.fromisoformat(cached["cached_ts"])).total_seconds()
