@@ -24,8 +24,12 @@ Factor allocation (max pts):
   EPS growth              4   eps_growth
   Free cash flow          4   fcf
   Forward P/E             3   fwd_pe
+  News sentiment          5   news_sentiment
+  Earnings surprise       3   earnings_surprise
+  Short interest          3   short_interest
+  Macro environment       4   macro
   ─────────────────────────
-  MAX TOTAL             100
+  MAX TOTAL            ~115 (clamped to 100)
 """
 
 from fundamentals import fmt_large
@@ -36,6 +40,9 @@ FACTOR_NAMES = [
     "mom_6m", "mom_1m", "mom_3m", "vs_50ma",
     "rev_cagr", "rev_trend", "ni_cagr", "ni_trend",
     "ret_5yr", "pol_buys", "eps_growth", "fcf", "fwd_pe",
+    "news_sentiment", "earnings_surprise",
+    "short_interest", "macro", "insider", "inst", "sector",
+    "breakout", "volume_surge", "earnings_timing", "analyst_revision",
 ]
 
 
@@ -208,21 +215,23 @@ def _score_internal(fund: dict, pol_buys_30d: int = 0) -> "tuple[float, list[str
         elif rev_cagr >= 8:
             _add("rev_cagr", 1, f"📊 Revenue 5yr CAGR {rev_cagr:.1f}% (+1)")
 
-    # ── Revenue growth trend (max +5, min -10) ───────────────────────────────
-    rev_trend = _n(fund.get("revenue_trend"))
-    if rev_trend is not None:
-        if rev_trend > 10:
-            _add("rev_trend",  5, f"📈 Revenue growth accelerating sharply (+{rev_trend:.1f}pp) (+5)")
-        elif rev_trend > 4:
-            _add("rev_trend",  3, f"📈 Revenue growth accelerating (+{rev_trend:.1f}pp) (+3)")
-        elif rev_trend > 0:
+    # ── Revenue growth — latest YoY % (max +5, min -10) ─────────────────────
+    rev_g = _n(fund.get("recent_rev_growth_pct"))
+    if rev_g is not None:
+        if rev_g >= 30:
+            _add("rev_trend",  5, f"📈 Revenue +{rev_g:.0f}% YoY — hyper growth (+5)")
+        elif rev_g >= 15:
+            _add("rev_trend",  4, f"📈 Revenue +{rev_g:.0f}% YoY — strong growth (+4)")
+        elif rev_g >= 8:
+            _add("rev_trend",  3, f"📈 Revenue +{rev_g:.0f}% YoY (+3)")
+        elif rev_g >= 3:
             _add("rev_trend",  1)
-        elif rev_trend >= -5:
-            _add("rev_trend", -2, f"📉 Revenue growth slowing ({rev_trend:.1f}pp) (−2)")
-        elif rev_trend >= -15:
-            _add("rev_trend", -5, f"📉 Revenue growth decelerating ({rev_trend:.1f}pp) (−5)")
+        elif rev_g >= -5:
+            _add("rev_trend",  0)
+        elif rev_g >= -15:
+            _add("rev_trend", -4, f"📉 Revenue shrinking {rev_g:.0f}% YoY (−4)")
         else:
-            _add("rev_trend", -10, f"📉 Revenue growth collapsing ({rev_trend:.1f}pp) (−10)")
+            _add("rev_trend", -10, f"📉 Revenue collapsing {rev_g:.0f}% YoY (−10)")
 
     # ── NI CAGR (max +2) ─────────────────────────────────────────────────────
     ni_cagr = _n(fund.get("net_income_cagr_5yr_pct"))
@@ -232,21 +241,23 @@ def _score_internal(fund: dict, pol_buys_30d: int = 0) -> "tuple[float, list[str
         elif ni_cagr >= 10:
             _add("ni_cagr", 1)
 
-    # ── NI growth trend (max +4, min -9) ─────────────────────────────────────
-    ni_trend = _n(fund.get("ni_trend"))
-    if ni_trend is not None:
-        if ni_trend > 10:
-            _add("ni_trend",  4, f"📈 Net income growth accelerating sharply (+{ni_trend:.1f}pp) (+4)")
-        elif ni_trend > 4:
-            _add("ni_trend",  2, f"📈 Net income growth improving (+{ni_trend:.1f}pp) (+2)")
-        elif ni_trend > 0:
+    # ── Net income growth — latest YoY % (max +4, min -9) ───────────────────
+    ni_g = _n(fund.get("recent_ni_growth_pct"))
+    if ni_g is not None:
+        if ni_g >= 30:
+            _add("ni_trend",  4, f"💹 Net income +{ni_g:.0f}% YoY (+4)")
+        elif ni_g >= 15:
+            _add("ni_trend",  3, f"💹 Net income +{ni_g:.0f}% YoY (+3)")
+        elif ni_g >= 5:
+            _add("ni_trend",  2, f"💹 Net income +{ni_g:.0f}% YoY (+2)")
+        elif ni_g >= 0:
             _add("ni_trend",  1)
-        elif ni_trend >= -5:
-            _add("ni_trend", -2, f"📉 Net income growth slowing ({ni_trend:.1f}pp) (−2)")
-        elif ni_trend >= -15:
-            _add("ni_trend", -5, f"📉 Net income declining ({ni_trend:.1f}pp) (−5)")
+        elif ni_g >= -20:
+            _add("ni_trend", -3, f"📉 Net income down {ni_g:.0f}% YoY (−3)")
+        elif ni_g >= -50:
+            _add("ni_trend", -6, f"📉 Net income down {ni_g:.0f}% YoY (−6)")
         else:
-            _add("ni_trend", -9, f"📉 Net income collapsing ({ni_trend:.1f}pp) (−9)")
+            _add("ni_trend", -9, f"📉 Net income down {ni_g:.0f}% YoY (−9)")
 
     # ── 5-year total return (max +4, min -5) ─────────────────────────────────
     ret5 = _n(fund.get("total_return_5yr_pct"))
@@ -304,7 +315,200 @@ def _score_internal(fund: dict, pol_buys_30d: int = 0) -> "tuple[float, list[str
         elif fpe > pe * 1.2:
             _add("fwd_pe", -4, f"📊 Forward P/E ({fpe:.1f}) > Trailing ({pe:.1f}) — earnings shrinking (−4)")
 
-    # Clamp to [0, 100] as a safety net only — well-designed stocks shouldn't hit 100
+    # ── News sentiment (max +5, min -8) ──────────────────────────────────────
+    # Net count of positive minus negative keywords across recent headlines.
+    news_net = fund.get("news_sentiment_score")
+    if news_net is not None:
+        # news_net may be a float (FinBERT confidence-weighted) or int (keyword count)
+        _news_display = f"{news_net:+.1f}" if isinstance(news_net, float) else f"{news_net:+d}"
+        if news_net >= 4:
+            _add("news_sentiment",  5, f"📰 Strong positive news sentiment ({_news_display}) (+5)")
+        elif news_net >= 2:
+            _add("news_sentiment",  3, f"📰 Positive news sentiment ({_news_display}) (+3)")
+        elif news_net == 1:
+            _add("news_sentiment",  1, f"📰 Slightly positive news (+1)")
+        elif news_net == 0:
+            _add("news_sentiment",  0)
+        elif news_net >= -2:
+            _add("news_sentiment", -3, f"📰 Negative news sentiment ({_news_display}) (−3)")
+        elif news_net >= -4:
+            _add("news_sentiment", -5, f"📰 Significant negative news ({_news_display}) (−5)")
+        else:
+            _add("news_sentiment", -8, f"📰 Heavy negative news coverage ({_news_display}) (−8)")
+
+    # ── Earnings surprise (max +3, min -6) ───────────────────────────────────
+    surp = _n(fund.get("earnings_surprise_pct"))
+    if surp is not None:
+        if surp >= 20:
+            _add("earnings_surprise",  3, f"🎯 Last quarter EPS beat by {surp:.0f}% (+3)")
+        elif surp >= 10:
+            _add("earnings_surprise",  2, f"🎯 Last quarter EPS beat by {surp:.0f}% (+2)")
+        elif surp >= 3:
+            _add("earnings_surprise",  1, f"🎯 Last quarter EPS beat by {surp:.0f}% (+1)")
+        elif surp >= -3:
+            _add("earnings_surprise",  0)
+        elif surp >= -10:
+            _add("earnings_surprise", -3, f"⚠️ Last quarter EPS missed by {abs(surp):.0f}% (−3)")
+        else:
+            _add("earnings_surprise", -6, f"⚠️ Last quarter EPS missed by {abs(surp):.0f}% (−6)")
+
+    # ── Short interest (max +3, min -6) ──────────────────────────────────────
+    spf = _n(fund.get("short_pct_float"))   # % of float sold short
+    m1  = _n(fund.get("mom_1m_pct"))
+    if spf is not None:
+        if spf > 25 and m1 and m1 > 10:
+            _add("short_interest",  4, f"🔥 Short squeeze setup — {spf:.0f}% float short, price +{m1:.0f}% (+4)")
+        elif spf < 2:
+            _add("short_interest",  3, f"📊 Very low short interest ({spf:.1f}% float) — strong confidence (+3)")
+        elif spf < 5:
+            _add("short_interest",  1)
+        elif spf < 15:
+            _add("short_interest",  0)
+        elif spf < 25:
+            _add("short_interest", -3, f"📊 High short interest ({spf:.0f}% float) (−3)")
+        else:
+            _add("short_interest", -6, f"📊 Very high short interest ({spf:.0f}% float) (−6)")
+
+    # ── Insider buying (SEC Form 4 — open market purchases only) ────────────
+    # CEO/CFO buying their OWN stock with real money = strong conviction signal
+    ins_score = fund.get("insider_buy_score", 0) or 0
+    ins_buys  = fund.get("insider_buy_count", 0) or 0
+    ins_sells = fund.get("insider_sell_count", 0) or 0
+    ceo_bought = fund.get("insider_ceo_bought", False)
+    cfo_bought = fund.get("insider_cfo_bought", False)
+
+    if ceo_bought and cfo_bought:
+        _add("insider", 8, "🏦 CEO + CFO both buying open-market — very strong insider conviction (+8)")
+    elif ceo_bought:
+        _add("insider", 6, "🏦 CEO buying own stock open-market — strong insider signal (+6)")
+    elif cfo_bought:
+        _add("insider", 5, "🏦 CFO buying own stock open-market — strong insider signal (+5)")
+    elif ins_buys >= 3:
+        _add("insider", 4, f"🏦 {ins_buys} insiders buying open-market in last 90 days (+4)")
+    elif ins_buys >= 1:
+        _add("insider", 2, f"🏦 Insider open-market purchase detected (+2)")
+    elif ins_sells >= 5 and ins_buys == 0:
+        _add("insider", -4, f"📉 Heavy insider selling ({ins_sells} sales, 0 buys) (−4)")
+    elif ins_sells >= 3 and ins_buys == 0:
+        _add("insider", -2, f"📉 Insider selling with no buys ({ins_sells} sales) (−2)")
+
+    # ── Institutional holdings (13F filings via yfinance) ────────────────────
+    inst_score    = int(fund.get("inst_score", 0) or 0)
+    inst_t1_buy   = bool(fund.get("inst_tier1_buying", False))
+    inst_t1_names = fund.get("inst_tier1_buyers", []) or []
+    inst_buyers   = int(fund.get("inst_buyer_count", 0) or 0)
+    inst_sellers  = int(fund.get("inst_seller_count", 0) or 0)
+
+    if inst_score >= 8:
+        names = ", ".join(inst_t1_names[:2]) if inst_t1_names else "Tier-1 institutions"
+        _add("inst", inst_score, f"🏢 {names} adding to position — smart-money consensus (+{inst_score})")
+    elif inst_score >= 5:
+        name = inst_t1_names[0] if inst_t1_names else "Tier-1 institution"
+        _add("inst", inst_score, f"🏢 {name} increasing position — institutional conviction (+{inst_score})")
+    elif inst_score >= 2:
+        _add("inst", inst_score, f"🏢 {inst_buyers} institution(s) adding to positions (+{inst_score})")
+    elif inst_score < 0:
+        _add("inst", inst_score, f"📉 Institutional net selling ({inst_sellers} sellers, {inst_buyers} buyers) ({inst_score:+d})")
+
+    # ── Sector rotation (vs SPY 30-day momentum) ─────────────────────────────
+    _sector_name = fund.get("sector") or ""
+    if _sector_name:
+        try:
+            from sector_rotation import get_sector_signal, MOMENTUM_LABEL
+            _sig   = get_sector_signal(_sector_name)
+            _smod  = int(_sig.get("score_mod", 0))
+            _smom  = _sig.get("momentum", "neutral")
+            _vs30  = _sig.get("vs_spy_30d")
+            _etf   = _sig.get("etf", "")
+            if _smod != 0:
+                _label, _ = MOMENTUM_LABEL.get(_smom, ("Sector signal", "#aaa"))
+                _vs_str   = f" ({_vs30:+.1f}% vs SPY)" if _vs30 is not None else ""
+                _add("sector", _smod,
+                     f"{_label} — {_sector_name} ({_etf}){_vs_str} ({_smod:+d})")
+        except Exception:
+            pass
+
+    # ── Macro environment (FRED data — yield curve + rate direction) ──────────
+    try:
+        from macro_data import fetch_macro, macro_score_modifier
+        macro = fetch_macro()
+        fwd_pe = _n(fund.get("forward_pe"))
+        m_pts, m_reasons = macro_score_modifier(macro, fwd_pe=fwd_pe)
+        if m_pts != 0:
+            _add("macro", m_pts)
+            for r in m_reasons:
+                reasons.append(r)
+    except Exception:
+        pass
+
+    # ── Analyst upgrades / downgrades (last 30 days) ─────────────────────────
+    _ups   = int(fund.get("analyst_upgrades_30d", 0) or 0)
+    _downs = int(fund.get("analyst_downgrades_30d", 0) or 0)
+    _up_firms = fund.get("analyst_upgrade_firms", []) or []
+    _dn_firms = fund.get("analyst_downgrade_firms", []) or []
+    if _ups >= 3:
+        _firms_str = ", ".join(_up_firms[:2]) if _up_firms else f"{_ups} firms"
+        _add("analyst_revision", 6, f"⬆️ {_ups} analyst upgrades in last 30 days ({_firms_str}…) (+6)")
+    elif _ups == 2:
+        _add("analyst_revision", 4, f"⬆️ 2 analyst upgrades in last 30 days (+4)")
+    elif _ups == 1:
+        _add("analyst_revision", 2, f"⬆️ Analyst upgrade in last 30 days (+2)")
+    if _downs >= 3 and _ups == 0:
+        _firms_str = ", ".join(_dn_firms[:2]) if _dn_firms else f"{_downs} firms"
+        _add("analyst_revision", -6, f"⬇️ {_downs} analyst downgrades in last 30 days ({_firms_str}…) (−6)")
+    elif _downs >= 2 and _ups == 0:
+        _add("analyst_revision", -4, f"⬇️ {_downs} analyst downgrades in last 30 days (−4)")
+    elif _downs == 1 and _ups == 0:
+        _add("analyst_revision", -2, f"⬇️ Analyst downgrade in last 30 days (−2)")
+
+    # ── 52-week breakout / proximity ──────────────────────────────────────────
+    _pct_high = _n(fund.get("pct_from_52w_high"))
+    _pct_low  = _n(fund.get("pct_from_52w_low"))
+    if _pct_high is not None:
+        if _pct_high >= -2:
+            _add("breakout", 6, f"🚀 At/near 52-week high ({_pct_high:+.1f}%) — breakout territory (+6)")
+        elif _pct_high >= -8:
+            _add("breakout", 3, f"📈 Within 8% of 52-week high ({_pct_high:+.1f}%) — approaching breakout (+3)")
+        elif _pct_high >= -20:
+            _add("breakout", 1, f"📊 Within 20% of 52-week high ({_pct_high:+.1f}%) (+1)")
+        elif _pct_high <= -50:
+            _add("breakout", -4, f"⚠️ {abs(_pct_high):.0f}% below 52-week high — deep decline (−4)")
+        elif _pct_high <= -35:
+            _add("breakout", -2, f"📉 {abs(_pct_high):.0f}% below 52-week high (−2)")
+    if _pct_low is not None and _pct_low <= 10:
+        reasons.append(f"⚠️ Near 52-week low ({_pct_low:+.1f}% above) — watch for support")
+
+    # ── Volume surge ──────────────────────────────────────────────────────────
+    _vol_ratio  = _n(fund.get("volume_ratio"))
+    _day_chg    = _n(fund.get("today_change_pct"))
+    if _vol_ratio is not None and _vol_ratio >= 2.0:
+        _up_day = _day_chg is not None and _day_chg > 0
+        _dn_day = _day_chg is not None and _day_chg < 0
+        if _vol_ratio >= 3.0 and _up_day:
+            _add("volume_surge", 5, f"🔊 {_vol_ratio:.1f}× normal volume on an up day — strong buying conviction (+5)")
+        elif _vol_ratio >= 2.0 and _up_day:
+            _add("volume_surge", 3, f"🔊 {_vol_ratio:.1f}× normal volume on an up day — buying interest (+3)")
+        elif _vol_ratio >= 3.0 and _dn_day:
+            _add("volume_surge", -4, f"📉 {_vol_ratio:.1f}× normal volume on a down day — heavy distribution (−4)")
+        elif _vol_ratio >= 2.0 and _dn_day:
+            _add("volume_surge", -2, f"📉 {_vol_ratio:.1f}× normal volume on a down day — selling pressure (−2)")
+        else:
+            _add("volume_surge", 2, f"🔊 {_vol_ratio:.1f}× normal volume — elevated interest (+2)")
+
+    # ── Earnings timing (risk penalty for imminent earnings) ──────────────────
+    _earn_days = fund.get("earnings_days_until")
+    if _earn_days is not None:
+        if _earn_days <= 2:
+            _add("earnings_timing", -5,
+                 f"📅 Earnings in {_earn_days} day(s) — binary event risk, high uncertainty (−5)")
+        elif _earn_days <= 7:
+            _add("earnings_timing", -3,
+                 f"📅 Earnings in {_earn_days} days — near-term event risk (−3)")
+        elif _earn_days <= 14:
+            _add("earnings_timing", -1,
+                 f"📅 Earnings in {_earn_days} days — note upcoming catalyst (−1)")
+
+    # Clamp to [0, 100] as a safety net
     return max(0.0, min(100.0, score)), reasons, fp
 
 

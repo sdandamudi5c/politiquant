@@ -1,0 +1,11 @@
+{
+  "sender_email": "you@gmail.com",
+  "app_password": "xxxx xxxx xxxx xxxx",
+  "recipient_email": "you@gmail.com",
+  "alert_min_score": 60,
+  "alert_min_pols": 1,
+  "alert_consensus": false,
+  "alert_bipartisan": false,
+  "alert_high_score": true,
+  "alert_portfolio": true
+}

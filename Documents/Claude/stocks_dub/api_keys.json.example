@@ -1,0 +1,4 @@
+{
+  "finnhub_api_key": "YOUR_FINNHUB_KEY_HERE",
+  "fred_api_key": "YOUR_FRED_KEY_HERE"
+}

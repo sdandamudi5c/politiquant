@@ -11,10 +11,144 @@ from pdf_report import generate_stock_pdf
 from scraper import load_cache
 from scorer import score_stock, score_stock_detailed, signal_label
 from score_history import predict_return
+from sidebar_jobs import render as _render_sidebar
 
-st.set_page_config(page_title="Fundamental Analysis", page_icon="📈", layout="wide")
+st.set_page_config(page_title="PolitiQuant · Stock Research", page_icon="📈", layout="wide")
+_render_sidebar()
 
-st.title("📈 Fundamental Analysis")
+st.title("📈 Stock Research")
+
+_research_view = st.radio(
+    "", ["🔍 Single Stock", "⚖️ Compare Stocks"],
+    horizontal=True, label_visibility="collapsed", key="research_view",
+)
+st.divider()
+
+# ── COMPARE VIEW ──────────────────────────────────────────────────────────────
+if _research_view == "⚖️ Compare Stocks":
+    from scorer import FACTOR_NAMES as _FN
+    from google_trends import fetch_trends as _ft_cmp
+
+    st.subheader("⚖️ Compare Stocks")
+    st.caption("Score 2–3 stocks side-by-side — every factor, ML prediction, Google Trends.")
+
+    _ci1, _ci2, _ci3, _cb = st.columns([1.5, 1.5, 1.5, 1])
+    _ct1 = _ci1.text_input("Stock 1", value="NVDA", key="cmp1").upper().strip()
+    _ct2 = _ci2.text_input("Stock 2", value="AMD",  key="cmp2").upper().strip()
+    _ct3 = _ci3.text_input("Stock 3 (optional)", value="", key="cmp3").upper().strip()
+    _crun = _cb.button("⚖️ Compare", type="primary", use_container_width=True)
+    _ctickers = [t for t in [_ct1, _ct2, _ct3] if t]
+
+    if _crun and _ctickers:
+        _cresults = {}
+        _cprog = st.progress(0.0)
+        for _ci_idx, _ctk in enumerate(_ctickers):
+            _cprog.progress((_ci_idx+0.5)/len(_ctickers), text=f"Scoring {_ctk}…")
+            _cfund = fetch_fundamentals(_ctk)
+            _cscore, _creasons, _cfp = score_stock_detailed(_cfund)
+            _cpred = predict_return(_cfp)
+            _cresults[_ctk] = {"fund": _cfund, "score": _cscore, "reasons": _creasons, "fp": _cfp, "pred": _cpred}
+        _cprog.empty()
+        st.session_state["cmp_cache"] = _cresults
+        st.session_state["cmp_tickers"] = _ctickers
+
+    _cresults  = st.session_state.get("cmp_cache", {})
+    _ctickers  = st.session_state.get("cmp_tickers", _ctickers)
+
+    if not _cresults:
+        st.info("Enter 2–3 tickers above and click Compare.")
+        st.stop()
+
+    _SIG_C = {"STRONG BUY":"#2ecc71","BUY":"#27ae60","WATCH":"#f39c12","NEUTRAL":"#aaa","AVOID":"#e74c3c"}
+    _ncols = len(_ctickers)
+    _hhcols = st.columns(_ncols)
+    for _i, _tk in enumerate(_ctickers):
+        _cr = _cresults[_tk]; _cscore = _cr["score"]
+        _csig, _ccol = signal_label(_cscore)
+        _cfund = _cr["fund"]; _cprice = _cfund.get("current_price"); _cpred = _cr["pred"]
+        _cpred_html = ""
+        if _cpred:
+            _pret,_pci,_ntr,_dacc = _cpred; _pcol2 = "#2ecc71" if _pret>0 else "#e74c3c"
+            _cpred_html = f"<div style='font-size:0.82rem;margin-top:6px;'><span style='color:{_pcol2};font-weight:700;'>ML: {_pret:+.1f}%</span><span style='color:#888;'> ±{_pci:.1f}%</span></div>"
+        _hhcols[_i].markdown(
+            f"<div style='background:{_ccol}22;border:2px solid {_ccol};border-radius:10px;padding:16px;text-align:center;'>"
+            f"<div style='font-size:1.8rem;font-weight:900;color:#fff;'>{_tk}</div>"
+            f"<div style='color:#aaa;font-size:0.82rem;'>{_cfund.get('company_name','')[:28]}</div>"
+            f"<div style='font-size:2rem;font-weight:900;color:{_ccol};margin:8px 0;'>{_cscore:.0f}</div>"
+            f"<div style='font-weight:700;color:{_ccol};'>{_csig}</div>"
+            + (f"<div style='color:#aaa;font-size:0.82rem;'>${_cprice:.2f}</div>" if _cprice else "")
+            + _cpred_html + "</div>", unsafe_allow_html=True)
+
+    st.divider()
+    st.subheader("📐 Factor Breakdown")
+    import pandas as _cpd
+    _crow_data = []
+    for _fn in _FN:
+        _crow = {"Factor": _fn.replace("_"," ").title()}
+        for _tk in _ctickers: _crow[_tk] = round(_cresults[_tk]["fp"].get(_fn, 0.0), 2)
+        _crow_data.append(_crow)
+    _cdf = _cpd.DataFrame(_crow_data)
+    def _cstyle(v):
+        if not isinstance(v,(int,float)): return ""
+        return "color:#2ecc71;font-weight:bold" if v>0 else "color:#e74c3c;font-weight:bold" if v<0 else "color:#666"
+    st.dataframe(_cdf.style.applymap(_cstyle, subset=_ctickers), use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("📊 Key Metrics")
+    _cm_rows = []
+    _CMETRICS = [
+        ("Price",         lambda f: f"${f.get('current_price'):.2f}" if f.get("current_price") else "N/A"),
+        ("Analyst Target",lambda f: f"${f.get('analyst_target'):.2f}" if f.get("analyst_target") else "N/A"),
+        ("Wall St Rating",lambda f: f.get("analyst_rating","N/A")),
+        ("RSI",           lambda f: f"{f.get('rsi'):.0f}" if f.get("rsi") else "N/A"),
+        ("P/E (TTM)",     lambda f: f"{f.get('pe_ratio'):.1f}" if f.get("pe_ratio") else "N/A"),
+        ("Fwd P/E",       lambda f: f"{f.get('forward_pe'):.1f}" if f.get("forward_pe") else "N/A"),
+        ("Market Cap",    lambda f: fmt_large(f.get("market_cap"))),
+        ("52w High %",    lambda f: f"{f.get('pct_from_52w_high'):+.1f}%" if f.get("pct_from_52w_high") is not None else "N/A"),
+        ("Volume Ratio",  lambda f: f"{f.get('volume_ratio'):.1f}×" if f.get("volume_ratio") else "N/A"),
+        ("Earnings In",   lambda f: f"{f.get('earnings_days_until')}d" if f.get("earnings_days_until") is not None else "—"),
+        ("Upgrades 30d",  lambda f: str(f.get("analyst_upgrades_30d",0))),
+        ("Inst Score",    lambda f: str(f.get("inst_score",0))),
+        ("Sector",        lambda f: f.get("sector","N/A")),
+    ]
+    for _lbl, _fn2 in _CMETRICS:
+        _row = {"Metric": _lbl}
+        for _tk in _ctickers:
+            try: _row[_tk] = _fn2(_cresults[_tk]["fund"])
+            except: _row[_tk] = "N/A"
+        _cm_rows.append(_row)
+    st.dataframe(_cpd.DataFrame(_cm_rows), use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("📈 Google Trends")
+    _gt_cols = st.columns(_ncols)
+    for _i, _tk in enumerate(_ctickers):
+        with _gt_cols[_i]:
+            with st.spinner(f"Trends {_tk}…"):
+                _td = _ft_cmp(_tk)
+            if _td.get("error"): st.caption(f"No data: {_td['error']}"); continue
+            _tc = {"spike":"#f39c12","rising":"#2ecc71","falling":"#e74c3c","stable":"#888"}.get(_td["trend"],"#888")
+            _tl = {"spike":"🔥 Spike","rising":"📈 Rising","falling":"📉 Falling","stable":"➡️ Stable"}.get(_td["trend"],"—")
+            st.markdown(f"<div style='background:{_tc}18;border:1px solid {_tc}55;border-radius:8px;padding:10px;text-align:center;'>"
+                        f"<div style='color:{_tc};font-weight:700;'>{_tl}</div>"
+                        f"<div style='color:#aaa;font-size:0.8rem;'>{_td['pct_change']:+.0f}% vs prior 4wk</div></div>",unsafe_allow_html=True)
+            if _td.get("weekly_data"):
+                import pandas as _pd3
+                _wdf = _pd3.DataFrame(_td["weekly_data"]).rename(columns={"date":"Date","value":"Interest"})
+                _wdf["Date"] = _pd3.to_datetime(_wdf["Date"])
+                st.line_chart(_wdf.set_index("Date")["Interest"], height=120, use_container_width=True)
+
+    st.divider()
+    st.subheader("💬 Scoring Reasons")
+    _rc = st.columns(_ncols)
+    for _i, _tk in enumerate(_ctickers):
+        with _rc[_i]:
+            st.markdown(f"**{_tk}**")
+            for _rsn in _cresults[_tk]["reasons"]: st.caption(_rsn)
+
+    st.stop()  # ← don't render Single Stock view below
+
+# ── SINGLE STOCK VIEW ─────────────────────────────────────────────────────────
 st.caption("Buy / Hold / Sell signals + detailed metrics for any stock. Data via Yahoo Finance (free, cached daily).")
 
 # ── Ticker selection ───────────────────────────────────────────────────────────
@@ -456,6 +590,46 @@ if "fa_results" in st.session_state:
                             "Transaction": st.column_config.TextColumn(width="medium"),
                         },
                     )
+
+            # ── Google Trends ─────────────────────────────────────────────────
+            st.divider()
+            with st.expander("📈 Google Trends Interest", expanded=False):
+                st.caption("Rising public search interest in a stock often precedes price moves.")
+                with st.spinner(f"Fetching Google Trends for {ticker}…"):
+                    try:
+                        from google_trends import fetch_trends as _ft
+                        _td = _ft(ticker)
+                        if _td.get("error"):
+                            st.caption(f"No trend data available: {_td['error']}")
+                        else:
+                            _trend   = _td["trend"]
+                            _pct_chg = _td["pct_change"]
+                            _spike   = _td["spike_ratio"]
+                            _recent  = _td["recent_avg"]
+                            _weekly  = _td.get("weekly_data", [])
+                            _tcol    = {"spike": "#f39c12", "rising": "#2ecc71",
+                                        "falling": "#e74c3c", "stable": "#888"}.get(_trend, "#888")
+                            _tlbl    = {"spike": "🔥 Spiking", "rising": "📈 Trending Up",
+                                        "falling": "📉 Trending Down", "stable": "➡️ Stable"}.get(_trend, "—")
+                            st.markdown(
+                                f"<span style='color:{_tcol}; font-weight:700; font-size:1.1rem;'>"
+                                f"{_tlbl}</span>"
+                                f"<span style='color:#888; font-size:0.85rem; margin-left:10px;'>"
+                                f"Recent avg interest: {_recent:.0f}/100 &nbsp;·&nbsp; "
+                                f"4-week change: {_pct_chg:+.0f}%"
+                                + (f" &nbsp;·&nbsp; <b>Spike ratio: {_spike:.1f}×</b>" if _spike >= 2 else "")
+                                + "</span>",
+                                unsafe_allow_html=True,
+                            )
+                            if _weekly:
+                                import pandas as _pd2
+                                _wdf = _pd2.DataFrame(_weekly).rename(
+                                    columns={"date": "Date", "value": "Search Interest"})
+                                _wdf["Date"] = _pd2.to_datetime(_wdf["Date"])
+                                st.line_chart(_wdf.set_index("Date")["Search Interest"],
+                                              height=160, use_container_width=True)
+                    except Exception as _te:
+                        st.caption(f"Trends unavailable: {_te}")
 
             # ── PDF download ──────────────────────────────────────────────────
             st.divider()
