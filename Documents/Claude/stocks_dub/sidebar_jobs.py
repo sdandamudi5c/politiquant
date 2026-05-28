@@ -135,11 +135,17 @@ def render():
                 cancelling = js.is_cancelling()
 
                 # ── Stale detection ────────────────────────────────────────────
-                # If no update in the last 10 min the process has likely crashed.
+                # A job is stale if:
+                #   • We have a timestamp and it's >10 min old, OR
+                #   • We have NO timestamps at all (old-style state written by
+                #     code before the started_at/last_updated fields were added).
+                #     Those jobs have no way to self-resolve — always stale.
+                # Intentional cancelling is NOT stale (user asked for it to stop).
                 _last_upd  = js.last_updated_at() or js.started_at()
                 _idle_mins = _minutes_since(_last_upd)
-                _stale     = (_idle_mins is not None and _idle_mins > _stale_minutes
-                              and not cancelling)
+                _no_ts     = not _last_upd          # truly unknown — old-style state
+                _stale     = (_no_ts or (_idle_mins is not None
+                              and _idle_mins > _stale_minutes))
 
                 if not any_shown:
                     st.markdown("---")
