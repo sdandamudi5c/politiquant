@@ -743,22 +743,25 @@ def _run_in_background(tickers, df_all_copy, min_price_, min_market_cap_, univer
                 _JOB.update(done=_done[0], current=ticker)
             return None
 
-    with ThreadPoolExecutor(max_workers=_workers) as ex:
-        futs = {ex.submit(_fetch_one, t): t for t in passing_tickers}
-        for fut in as_completed(futs):
-            fut.result()   # exceptions are handled inside _fetch_one
-
-    rows.sort(key=lambda r: r["score"], reverse=True)
     try:
-        history_batch = [
-            {"ticker": r["ticker"], "price": r["price"], "score": r["score"],
-             "factor_pts": r.get("factor_pts", {})} for r in rows if r.get("price")
-        ]
-        save_scores(history_batch)
-    except Exception:
-        pass
+        with ThreadPoolExecutor(max_workers=_workers) as ex:
+            futs = {ex.submit(_fetch_one, t): t for t in passing_tickers}
+            for fut in as_completed(futs):
+                fut.result()   # exceptions are handled inside _fetch_one
 
-    _JOB.finish(result={"rows": rows, "skipped": skipped, "universe_key": universe_key})
+        rows.sort(key=lambda r: r["score"], reverse=True)
+        try:
+            history_batch = [
+                {"ticker": r["ticker"], "price": r["price"], "score": r["score"],
+                 "factor_pts": r.get("factor_pts", {})} for r in rows if r.get("price")
+            ]
+            save_scores(history_batch)
+        except Exception:
+            pass
+    finally:
+        # Always mark job done — even if an exception occurs above.
+        # Without this, the sidebar shows "Running" forever after a crash.
+        _JOB.finish(result={"rows": rows, "skipped": skipped, "universe_key": universe_key})
 
 
 # ── Run / status ───────────────────────────────────────────────────────────────
@@ -778,8 +781,15 @@ if run_report:
 # ── Show progress if running ───────────────────────────────────────────────────
 if _JOB.is_running():
     done, total, current = _JOB.progress()
-    _tdisplay  = total if total else "?"
-    pct        = min(1.0, done / max(total or 7250, 1))
+    _tdisplay  = str(total) if total > 1 else "?"
+    # Cap at 0.99 — hitting 1.0 looks "done" but the job is still running.
+    # When total is unknown (0), show 0.60 indeterminate rather than letting
+    # done/fallback overflow past 100% (happens when min_price=0 and all stocks
+    # pass phase 1 so done == fallback_total at the phase 1→2 boundary).
+    if total > 1:
+        pct = min(0.99, done / total)
+    else:
+        pct = 0.60   # indeterminate — total not yet known
     cancelling = _JOB.is_cancelling()
     phase      = "🔍 Filtering" if "[filtering]" in (current or "") else "📊 Scoring"
     clean      = (current or "").replace("[filtering] ", "")
@@ -794,8 +804,8 @@ if _JOB.is_running():
                      help="Stop job and keep results collected so far"):
             _JOB.cancel()
             st.rerun()
-        st.caption(f"⏱ Started {_JOB.started_at()}  ·  {done} done  ·  "
-                   f"~{max(total-done,0)} remaining")
+        _remaining = f"~{total - done} remaining" if total > 1 else "calculating…"
+        st.caption(f"⏱ Started {_JOB.started_at()}  ·  {done} done  ·  {_remaining}")
 
     import time; time.sleep(1.5); st.rerun()
     st.stop()
