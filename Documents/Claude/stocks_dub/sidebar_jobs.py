@@ -145,7 +145,7 @@ def render():
                 _idle_mins = _minutes_since(_last_upd)
                 _no_ts     = not _last_upd          # truly unknown — old-style state
                 _stale     = (_no_ts or (_idle_mins is not None
-                              and _idle_mins > _stale_minutes))
+                              and _idle_mins > _STALE_MINUTES))
 
                 if not any_shown:
                     st.markdown("---")
