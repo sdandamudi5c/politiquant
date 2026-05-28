@@ -20,6 +20,7 @@ from fundamentals import fetch_fundamentals
 from scorer import score_stock_detailed
 from score_history import update_outcomes, save_scores, train_model, get_stats
 from scraper import load_cache
+from job_state import JobState
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 # Which stocks to score daily for the learning history.
@@ -65,6 +66,9 @@ def run():
         print("      No tickers found — check scraper cache.")
     else:
         print(f"      {len(tickers)} tickers to score.")
+        # Update sidebar job state so the UI shows real progress
+        _js = JobState("growth_report")
+        _js.start(total=len(tickers), meta={"universe_key": DAILY_UNIVERSE})
         batch  = []
         errors = 0
         for i, ticker in enumerate(tickers, 1):
@@ -80,9 +84,11 @@ def run():
                 batch.append({"ticker": ticker, "price": price, "score": score, "factor_pts": factor_pts})
                 if i % 20 == 0:
                     print(f"      {i}/{len(tickers)} done…")
+                    _js.update(done=i, current=ticker)
             except Exception as e:
                 errors += 1
         added = save_scores(batch)
+        _js.finish(result=batch)
         print(f"      {added} new score(s) saved. {errors} error(s) skipped.")
 
     # Step 3: show model status

@@ -65,9 +65,9 @@ class JobState:
         return self._load().get("status") == "cancelled"
 
     def progress(self) -> tuple[int, int, str]:
-        """Returns (done, total, current_ticker)."""
+        """Returns (done, total, current_ticker). total=0 means unknown."""
         d = self._load()
-        return d.get("done", 0), d.get("total", 1), d.get("current", "")
+        return d.get("done", 0), d.get("total", 0), d.get("current", "")
 
     def result(self):
         return self._load().get("result")

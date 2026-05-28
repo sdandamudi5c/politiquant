@@ -118,9 +118,13 @@ def render():
 
             if js.is_running():
                 done, total, current = js.progress()
-                _total_display = total if total else "?"
-                pct      = min(1.0, done / max(total or 7250, 1))
-                elapsed  = _elapsed(js.started_at())
+                # total=0 means unknown (job started without calling js.start())
+                _known_total   = total if total > 1 else None
+                _total_display = str(_known_total) if _known_total else "?"
+                # Use known total, or fall back to 7250 (typical scan size) for bar
+                _bar_total = _known_total or max(done + 1, 7250)
+                pct        = min(0.99, done / _bar_total)  # cap at 99% until truly done
+                elapsed    = _elapsed(js.started_at())
                 cancelling = js.is_cancelling()
 
                 if not any_shown:
@@ -149,7 +153,8 @@ def render():
                         st.rerun()
 
                     st.progress(pct, text=f"{done}/{_total_display} · {clean}")
-                    st.caption(f"⏱ Running {elapsed}")
+                    _elapsed_str = f" · {elapsed}" if elapsed else ""
+                    st.caption(f"⏱ Running{_elapsed_str}")
 
             elif js.was_cancelled():
                 result    = js.result() or {}
