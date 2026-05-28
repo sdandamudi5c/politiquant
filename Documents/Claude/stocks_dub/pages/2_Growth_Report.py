@@ -1,6 +1,20 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+# ── Raise macOS file-descriptor limit early ────────────────────────────────────
+# macOS's system-wide launchctl default is 256 fds per process.
+# With thousands of stocks each opening HTTP + SQLite connections this gets
+# exhausted, causing "Too many open files" even inside Streamlit's page scanner.
+# We raise it here (before any imports that open connections) to 65536.
+try:
+    import resource as _resource
+    _soft, _hard = _resource.getrlimit(_resource.RLIMIT_NOFILE)
+    _target = min(65536, _hard) if _hard > 0 else 65536
+    if _soft < _target:
+        _resource.setrlimit(_resource.RLIMIT_NOFILE, (_target, _hard))
+except Exception:
+    pass  # non-fatal — proceed with whatever limit the OS gives us
+
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
@@ -566,9 +580,20 @@ def _run_in_background(tickers, df_all_copy, min_price_, min_market_cap_, univer
     """
     Runs in a daemon thread.
       Phase 1 — fast_info pre-filter  (no Finnhub, no history)
-      Phase 2 — full fundamentals     (Finnhub skipped for large universes)
-    Workers: 20 for large universes (yfinance-only), 8 for small (Finnhub enabled).
+      Phase 2 — full fundamentals     (Finnhub + all enrichment enabled)
+    Workers capped low (_WORKERS=4) to avoid fd exhaustion; the fd limit is also
+    raised here so the daemon thread starts with the correct ceiling.
     """
+    # Ensure the daemon thread has a high enough fd limit (macOS default is 256).
+    try:
+        import resource as _res
+        _s, _h = _res.getrlimit(_res.RLIMIT_NOFILE)
+        _t = min(65536, _h) if _h > 0 else 65536
+        if _s < _t:
+            _res.setrlimit(_res.RLIMIT_NOFILE, (_t, _h))
+    except Exception:
+        pass
+
     _workers = _WORKERS
     import pandas as _pd
     cutoff_30d = _pd.Timestamp(date.today() - timedelta(days=30))

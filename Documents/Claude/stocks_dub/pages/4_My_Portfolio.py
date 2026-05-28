@@ -613,6 +613,7 @@ with _tab_sig:
 
     # Also pick up any holdings not yet scored by fetching directly
     _scored_tickers = {_r["ticker"] for _r in results}
+    tickers = [r["Ticker"].upper() for r in st.session_state.portfolio_rows if r.get("Ticker")]
     for _tk in tickers:
         if _tk not in _scored_tickers:
             try:

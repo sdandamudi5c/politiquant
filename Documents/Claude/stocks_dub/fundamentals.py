@@ -14,7 +14,7 @@ import yfinance as yf
 import cache_db as _cdb
 
 SCREEN_THRESHOLD = 5.0  # percent
-CACHE_VERSION = 9  # bump this whenever new fields are added
+CACHE_VERSION = 10  # bump this whenever new fields are added
 _NAMESPACE = "fundamentals"
 _CACHE_TTL = 24 * 3600   # 24 hours
 
@@ -23,11 +23,13 @@ _CACHE_TTL = 24 * 3600   # 24 hours
 _MEM_CACHE: dict = {}
 _MEM_LOCK = threading.Lock()
 
-# Global connection cap — prevents DNS thread exhaustion when many tickers are
+# Global connection cap — prevents fd exhaustion when many tickers are
 # fetched in parallel.  Each fetch_fundamentals call holds one slot while it
-# runs its inner ThreadPoolExecutor (max_workers=3), so at most
-# _MAX_CONCURRENT × 3 = 12 yfinance connections are open at any one time.
-_MAX_CONCURRENT = 4
+# runs its inner TPE (max_workers=3), so at most
+# _MAX_CONCURRENT × 3 = 9 yfinance connections are open at any one time.
+# Kept at 3 so 3 stocks × (3 yfinance + 4 Finnhub) = ~21 concurrent connections,
+# well within macOS's default 256 fd limit per process.
+_MAX_CONCURRENT = 3
 _FETCH_SEMAPHORE = threading.Semaphore(_MAX_CONCURRENT)
 
 
@@ -143,11 +145,6 @@ def fetch_fundamentals(ticker: str) -> dict:
         "fh_sell":                 0,
         "fh_strong_sell":          0,
         "fh_rec_total":            0,
-        # /stock/price-target — consensus price target
-        "fh_target_high":          None,
-        "fh_target_low":           None,
-        "fh_target_mean":          None,
-        "fh_target_median":        None,
         # /stock/insider-transactions — Form 4 purchases/sales
         "fh_insider_buys":         0,
         "fh_insider_sells":        0,
@@ -175,23 +172,31 @@ def fetch_fundamentals(ticker: str) -> dict:
         result["price_to_sales"]= info.get("priceToSalesTrailing12Months")
 
         # ── Fetch all sub-data in parallel ─────────────────────────────────────
-        # Cap at 5 workers to avoid flooding yfinance and triggering rate limits
-        # when multiple tickers are being scanned simultaneously.
+        # Reuse the single Ticker object `t` for ALL yfinance calls — prevents
+        # creating 7 separate sessions/connections per stock (the main cause of
+        # the "Too many open files" fd exhaustion on macOS).
+        # Cap at 3 workers so at most 3 × outer-semaphore(3) = 9 concurrent
+        # yfinance connections are open at once.
         from concurrent.futures import ThreadPoolExecutor as _TPE
         from institutional_trades import fetch_institutional_data as _fi_inst
         from insider_trades import fetch_insider_trades as _fi_ins
 
-        _tk = ticker
-        with _TPE(max_workers=5) as _pool:
-            _fhist = _pool.submit(lambda: yf.Ticker(_tk).history(period="5y", auto_adjust=True))
-            _ffin  = _pool.submit(lambda: yf.Ticker(_tk).income_stmt)
-            _fcf   = _pool.submit(lambda: yf.Ticker(_tk).cashflow)
-            _fbs   = _pool.submit(lambda: yf.Ticker(_tk).balance_sheet)
-            _fud   = _pool.submit(lambda: yf.Ticker(_tk).upgrades_downgrades)
-            _fnews = _pool.submit(lambda: yf.Ticker(_tk).news)
-            _feh   = _pool.submit(lambda: yf.Ticker(_tk).earnings_history)
-            _finst = _pool.submit(_fi_inst, _tk)
-            _fins  = _pool.submit(_fi_ins,  _tk)
+        # Each wrapper catches its own errors so a yfinance rate-limit on ONE
+        # call doesn't abort the whole function (Finnhub still runs, etc.).
+        def _safe_call(fn, *args, **kwargs):
+            try:    return fn(*args, **kwargs)
+            except: return None
+
+        with _TPE(max_workers=3) as _pool:
+            _fhist = _pool.submit(_safe_call, t.history, period="5y", auto_adjust=True)
+            _ffin  = _pool.submit(_safe_call, lambda: t.income_stmt)
+            _fcf   = _pool.submit(_safe_call, lambda: t.cashflow)
+            _fbs   = _pool.submit(_safe_call, lambda: t.balance_sheet)
+            _fud   = _pool.submit(_safe_call, lambda: t.upgrades_downgrades)
+            _fnews = _pool.submit(_safe_call, lambda: t.news)
+            _feh   = _pool.submit(_safe_call, lambda: t.earnings_history)
+            _finst = _pool.submit(_fi_inst, ticker)
+            _fins  = _pool.submit(_fi_ins,  ticker)
             _pre_hist = _fhist.result()
             _pre_fin  = _ffin.result()
             _pre_cf   = _fcf.result()
@@ -567,29 +572,27 @@ def fetch_fundamentals(ticker: str) -> dict:
         if _should_try_finnhub:
             try:
                 from finnhub_client import (
-                    fetch_news_sentiment       as _fh_news,
-                    fetch_earnings_surprise    as _fh_earn,
-                    fetch_basic_financials     as _fh_basic,
+                    fetch_news_sentiment        as _fh_news,
+                    fetch_earnings_surprise     as _fh_earn,
+                    fetch_basic_financials      as _fh_basic,
                     fetch_recommendation_trends as _fh_rec,
-                    fetch_price_target         as _fh_pt,
-                    fetch_insider_transactions as _fh_ins,
-                    get_api_key                as _fh_key,
+                    fetch_insider_transactions  as _fh_ins,
+                    get_api_key                 as _fh_key,
                 )
                 fh_key = _fh_key()
                 if fh_key:
-                    # Fire all 6 calls concurrently — Finnhub rate-limiter handles throttling
-                    with _TPE(max_workers=6) as _fhpool:
+                    # Fire all 5 free-tier calls concurrently — rate-limiter handles throttling
+                    # Note: /stock/price-target requires a paid plan (403) — skipped
+                    with _TPE(max_workers=5) as _fhpool:
                         _f_news  = _fhpool.submit(_fh_news,  ticker, api_key=fh_key)
                         _f_earn  = _fhpool.submit(_fh_earn,  ticker, api_key=fh_key)
                         _f_basic = _fhpool.submit(_fh_basic, ticker, api_key=fh_key)
                         _f_rec   = _fhpool.submit(_fh_rec,   ticker, api_key=fh_key)
-                        _f_pt    = _fhpool.submit(_fh_pt,    ticker, api_key=fh_key)
                         _f_ins   = _fhpool.submit(_fh_ins,   ticker, api_key=fh_key)
                         fh_news    = _f_news.result()
                         fh_earn    = _f_earn.result()
                         fh_basic   = _f_basic.result()
                         fh_rec     = _f_rec.result()
-                        fh_pt      = _f_pt.result()
                         fh_ins_raw = _f_ins.result()
 
                     # ── 1. News sentiment ──────────────────────────────────────
@@ -652,17 +655,7 @@ def fetch_fundamentals(ticker: str) -> dict:
                         result["fh_strong_sell"] = fh_rec.get("strong_sell", 0)
                         result["fh_rec_total"]   = fh_rec.get("total", 0)
 
-                    # ── 5. Price target (/stock/price-target) ──────────────────
-                    if not fh_pt.get("error") and fh_pt.get("target_mean"):
-                        result["fh_target_high"]   = fh_pt.get("target_high")
-                        result["fh_target_low"]    = fh_pt.get("target_low")
-                        result["fh_target_mean"]   = fh_pt.get("target_mean")
-                        result["fh_target_median"] = fh_pt.get("target_median")
-                        # Override analyst_target if yfinance didn't return one
-                        if result.get("analyst_target") is None:
-                            result["analyst_target"] = fh_pt.get("target_mean")
-
-                    # ── 6. Insider transactions (/stock/insider-transactions) ──
+                    # ── 5. Insider transactions (/stock/insider-transactions) ──
                     if not fh_ins_raw.get("error"):
                         result["fh_insider_buys"]       = fh_ins_raw.get("buy_count", 0)
                         result["fh_insider_sells"]      = fh_ins_raw.get("sell_count", 0)
