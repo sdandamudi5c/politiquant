@@ -71,25 +71,30 @@ def run():
         _js.start(total=len(tickers), meta={"universe_key": DAILY_UNIVERSE})
         batch  = []
         errors = 0
-        for i, ticker in enumerate(tickers, 1):
-            try:
-                fund = fetch_fundamentals(ticker)
-                if fund.get("error") and not fund.get("current_price"):
+        added  = 0
+        try:
+            for i, ticker in enumerate(tickers, 1):
+                try:
+                    fund = fetch_fundamentals(ticker)
+                    if fund.get("error") and not fund.get("current_price"):
+                        errors += 1
+                        continue
+                    price = fund.get("current_price") or 0
+                    if price < MIN_PRICE:
+                        continue
+                    score, _, factor_pts = score_stock_detailed(fund, pol_buys_30d=0)
+                    batch.append({"ticker": ticker, "price": price, "score": score, "factor_pts": factor_pts})
+                    if i % 20 == 0:
+                        print(f"      {i}/{len(tickers)} done…")
+                        _js.update(done=i, current=ticker)
+                except Exception as e:
                     errors += 1
-                    continue
-                price = fund.get("current_price") or 0
-                if price < MIN_PRICE:
-                    continue
-                score, _, factor_pts = score_stock_detailed(fund, pol_buys_30d=0)
-                batch.append({"ticker": ticker, "price": price, "score": score, "factor_pts": factor_pts})
-                if i % 20 == 0:
-                    print(f"      {i}/{len(tickers)} done…")
-                    _js.update(done=i, current=ticker)
-            except Exception as e:
-                errors += 1
-        added = save_scores(batch)
-        _js.finish(result=batch)
-        print(f"      {added} new score(s) saved. {errors} error(s) skipped.")
+            added = save_scores(batch)
+            print(f"      {added} new score(s) saved. {errors} error(s) skipped.")
+        finally:
+            # Always mark the job done — even if save_scores() or something
+            # else throws.  Without this, the sidebar shows "Running" forever.
+            _js.finish(result=batch)
 
     # Step 3: show model status
     print("\n[3/3] Model status…")

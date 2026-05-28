@@ -106,6 +106,20 @@ def _render_finnhub_gauge():
         pass
 
 
+_STALE_MINUTES = 10   # job is considered stalled if no update in this many minutes
+
+
+def _minutes_since(ts: str) -> "float | None":
+    """Return minutes elapsed since a '%Y-%m-%d %H:%M:%S' timestamp, or None."""
+    if not ts:
+        return None
+    try:
+        dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        return (datetime.now() - dt).total_seconds() / 60
+    except Exception:
+        return None
+
+
 def render():
     """Render the job status panel in the sidebar. Call once per page."""
     _render_macro()
@@ -118,33 +132,56 @@ def render():
 
             if js.is_running():
                 done, total, current = js.progress()
-                # total=0 means unknown (job started without calling js.start())
-                _known_total   = total if total > 1 else None
-                _total_display = str(_known_total) if _known_total else "?"
-                # Use known total, or fall back to 7250 (typical scan size) for bar
-                _bar_total = _known_total or max(done + 1, 7250)
-                pct        = min(0.99, done / _bar_total)  # cap at 99% until truly done
-                elapsed    = _elapsed(js.started_at())
                 cancelling = js.is_cancelling()
+
+                # ── Stale detection ────────────────────────────────────────────
+                # If no update in the last 10 min the process has likely crashed.
+                _last_upd  = js.last_updated_at() or js.started_at()
+                _idle_mins = _minutes_since(_last_upd)
+                _stale     = (_idle_mins is not None and _idle_mins > _stale_minutes
+                              and not cancelling)
 
                 if not any_shown:
                     st.markdown("---")
                     st.markdown("**⚙️ Background Jobs**")
                     any_shown = True
 
+                if _stale:
+                    # Show an orange warning + Reset button instead of running state
+                    st.warning(
+                        f"⚠️ **{label}** — stalled?\n"
+                        f"No activity for {_idle_mins:.0f} min (last: {current or '—'})"
+                    )
+                    if st.button("🔄 Reset job", key=f"reset_{job_id}",
+                                 help="Clear the stale state so the job can be restarted"):
+                        js.reset()
+                        st.rerun()
+                    continue   # don't fall through to the progress bar
+
                 if not cancelling:
                     any_running = True
 
-                # Phase label
-                phase = "🔍 Filtering" if "[filtering]" in (current or "") else "📊 Scoring"
-                clean = (current or "").replace("[filtering] ", "")
+                # ── Progress bar ───────────────────────────────────────────────
+                # total=0 → unknown (job started without calling js.start() — old code)
+                _known_total   = total if total > 1 else None
+                _total_display = str(_known_total) if _known_total else "?"
+
+                # When total is unknown keep bar at ~60% — avoids the misleading
+                # "100% red" look that happens when done > 7250 fallback.
+                if _known_total:
+                    pct = min(0.99, done / _known_total)
+                else:
+                    pct = 0.60   # indeterminate — we genuinely don't know progress
+
+                elapsed = _elapsed(js.started_at())
+                phase   = "🔍 Filtering" if "[filtering]" in (current or "") else "📊 Scoring"
+                clean   = (current or "").replace("[filtering] ", "")
 
                 if cancelling:
                     st.markdown(f"**{label}** — ⏳ Cancelling…")
-                    st.progress(pct, text=f"Stopping after current batch…")
+                    st.progress(pct, text="Stopping after current batch…")
                     st.caption("Workers finishing their current stock then stopping")
                 else:
-                    # Job title + Stop button on same row
                     title_col, stop_col = st.columns([3, 1])
                     title_col.markdown(f"**{label}** — {phase}")
                     if stop_col.button("🛑", key=f"stop_{job_id}",
@@ -164,7 +201,11 @@ def render():
                     st.markdown("---")
                     st.markdown("**⚙️ Background Jobs**")
                     any_shown = True
-                st.warning(f"🛑 {label}: stopped early · {n} results saved\n{completed}")
+                col_msg, col_btn = st.columns([4, 1])
+                col_msg.warning(f"🛑 **{label}**: stopped early · {n} results\n{completed}")
+                if col_btn.button("✕", key=f"dismiss_{job_id}", help="Dismiss"):
+                    js.reset()
+                    st.rerun()
 
             elif js.is_done():
                 completed = js.completed_at()
@@ -175,7 +216,11 @@ def render():
                     st.markdown("---")
                     st.markdown("**⚙️ Background Jobs**")
                     any_shown = True
-                st.success(f"✅ {label}: {n} results\n{completed}")
+                col_msg, col_btn = st.columns([4, 1])
+                col_msg.success(f"✅ **{label}**: {n} results\n{completed}")
+                if col_btn.button("✕", key=f"dismiss_{job_id}", help="Dismiss"):
+                    js.reset()
+                    st.rerun()
 
     # Show Finnhub gauge whenever any job is running
     if any_running:

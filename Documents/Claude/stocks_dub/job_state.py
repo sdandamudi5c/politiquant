@@ -95,10 +95,15 @@ class JobState:
 
     def update(self, done: int, current: str = ""):
         d = self._load()
-        d["status"]  = "running"   # always reassert — guards against race condition
-        d["done"]    = done
-        d["current"] = current
+        d["status"]       = "running"   # always reassert — guards against race condition
+        d["done"]         = done
+        d["current"]      = current
+        d["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._save(d)
+
+    def last_updated_at(self) -> str:
+        """Timestamp of the most recent update() call. Empty if never updated."""
+        return self._load().get("last_updated", "")
 
     def finish(self, result):
         d = self._load()
