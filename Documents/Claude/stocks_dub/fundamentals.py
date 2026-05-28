@@ -14,7 +14,7 @@ import yfinance as yf
 import cache_db as _cdb
 
 SCREEN_THRESHOLD = 5.0  # percent
-CACHE_VERSION = 8  # bump this whenever new fields are added
+CACHE_VERSION = 9  # bump this whenever new fields are added
 _NAMESPACE = "fundamentals"
 _CACHE_TTL = 24 * 3600   # 24 hours
 
@@ -121,6 +121,38 @@ def fetch_fundamentals(ticker: str) -> dict:
         # Short interest
         "short_pct_float":         None,
         "short_days_to_cover":     None,
+        # ── Finnhub-enriched fields (populated when API key present) ──
+        # /stock/metric — key financial ratios
+        "fh_pe_ttm":               None,
+        "fh_pb":                   None,
+        "fh_ps_ttm":               None,
+        "fh_roe_ttm":              None,
+        "fh_roa_ttm":              None,
+        "fh_gross_margin":         None,
+        "fh_net_margin":           None,
+        "fh_current_ratio":        None,
+        "fh_debt_to_equity":       None,
+        "fh_revenue_growth_3y":    None,
+        "fh_revenue_growth_5y":    None,
+        "fh_eps_growth_3y":        None,
+        "fh_eps_growth_5y":        None,
+        # /stock/recommendation — analyst consensus counts
+        "fh_strong_buy":           0,
+        "fh_buy":                  0,
+        "fh_hold":                 0,
+        "fh_sell":                 0,
+        "fh_strong_sell":          0,
+        "fh_rec_total":            0,
+        # /stock/price-target — consensus price target
+        "fh_target_high":          None,
+        "fh_target_low":           None,
+        "fh_target_mean":          None,
+        "fh_target_median":        None,
+        # /stock/insider-transactions — Form 4 purchases/sales
+        "fh_insider_buys":         0,
+        "fh_insider_sells":        0,
+        "fh_insider_buy_value":    0.0,
+        "fh_insider_executives":   [],
     }
 
     with _FETCH_SEMAPHORE:   # cap total concurrent network fetches across all callers
@@ -506,35 +538,61 @@ def fetch_fundamentals(ticker: str) -> dict:
         except Exception:
             pass
 
-        # ── Finnhub: news sentiment + earnings surprise ───────────────────────────
+        # ── Finnhub: 6-endpoint enrichment (all run in parallel) ─────────────────
+        #
+        # Endpoints called per stock:
+        #   1. /company-news           → headlines + FinBERT/keyword sentiment
+        #   2. /stock/earnings         → EPS surprise vs estimate
+        #   3. /stock/metric           → PE, PB, ROE, margins, growth rates, …
+        #   4. /stock/recommendation   → analyst buy/hold/sell count distribution
+        #   5. /stock/price-target     → consensus target high/low/mean
+        #   6. /stock/insider-transactions → open-market Form 4 purchases/sales
+        #
         # Skip Finnhub if:
-        #   1. Stock has no market cap (penny/shell/warrant — Finnhub won't have data)
-        #   2. Previous run flagged no Finnhub coverage — but only respect that flag
-        #      for 7 days; after that retry so transient errors self-heal.
+        #   • Market cap known AND < $10 M (penny/shell — Finnhub has no coverage)
+        #   • Previous run flagged no coverage AND that flag is < 7 days old
+        #     (after 7 days the flag expires so transient errors self-heal)
         _finnhub_ok = False
-        _mktcap = result.get("market_cap")   # may be None if t.info was rate-limited
+        _mktcap = result.get("market_cap")   # None = t.info rate-limited → give benefit of doubt
         _prev_no_coverage = False
         _no_cov_ts = cached.get("finnhub_no_coverage_ts", "")
         if _no_cov_ts:
             try:
-                _no_cov_age = (datetime.utcnow() - datetime.fromisoformat(_no_cov_ts)).total_seconds()
-                _prev_no_coverage = _no_cov_age < 7 * 86400   # respect for 7 days only
+                _age = (datetime.utcnow() - datetime.fromisoformat(_no_cov_ts)).total_seconds()
+                _prev_no_coverage = _age < 7 * 86400
             except Exception:
                 pass
-        # Try Finnhub if: market cap unknown (None = t.info was rate-limited, give benefit of doubt)
-        # OR market cap ≥ $10 M (skip obvious penny stocks / shells Finnhub won't cover)
         _should_try_finnhub = (_mktcap is None or _mktcap >= 10_000_000) and not _prev_no_coverage
 
         if _should_try_finnhub:
             try:
                 from finnhub_client import (
-                    fetch_news_sentiment    as _fh_news,
-                    fetch_earnings_surprise as _fh_earn,
-                    get_api_key             as _fh_key,
+                    fetch_news_sentiment       as _fh_news,
+                    fetch_earnings_surprise    as _fh_earn,
+                    fetch_basic_financials     as _fh_basic,
+                    fetch_recommendation_trends as _fh_rec,
+                    fetch_price_target         as _fh_pt,
+                    fetch_insider_transactions as _fh_ins,
+                    get_api_key                as _fh_key,
                 )
                 fh_key = _fh_key()
                 if fh_key:
-                    fh_news = _fh_news(ticker, api_key=fh_key)
+                    # Fire all 6 calls concurrently — Finnhub rate-limiter handles throttling
+                    with _TPE(max_workers=6) as _fhpool:
+                        _f_news  = _fhpool.submit(_fh_news,  ticker, api_key=fh_key)
+                        _f_earn  = _fhpool.submit(_fh_earn,  ticker, api_key=fh_key)
+                        _f_basic = _fhpool.submit(_fh_basic, ticker, api_key=fh_key)
+                        _f_rec   = _fhpool.submit(_fh_rec,   ticker, api_key=fh_key)
+                        _f_pt    = _fhpool.submit(_fh_pt,    ticker, api_key=fh_key)
+                        _f_ins   = _fhpool.submit(_fh_ins,   ticker, api_key=fh_key)
+                        fh_news    = _f_news.result()
+                        fh_earn    = _f_earn.result()
+                        fh_basic   = _f_basic.result()
+                        fh_rec     = _f_rec.result()
+                        fh_pt      = _f_pt.result()
+                        fh_ins_raw = _f_ins.result()
+
+                    # ── 1. News sentiment ──────────────────────────────────────
                     if not fh_news.get("error"):
                         result["news_sentiment_score"] = fh_news.get("sentiment_score")
                         result["recent_headlines"]     = fh_news.get("headlines", [])
@@ -542,15 +600,80 @@ def fetch_fundamentals(ticker: str) -> dict:
                         result["news_total_articles"]  = fh_news.get("total_articles", 0)
                         _finnhub_ok = True
                     else:
-                        # Timestamp the no-coverage flag so it auto-expires after 7 days
                         result["finnhub_no_coverage_ts"] = datetime.utcnow().isoformat()
 
-                    fh_earn = _fh_earn(ticker, api_key=fh_key)
+                    # ── 2. Earnings surprise ───────────────────────────────────
                     if not fh_earn.get("error") and fh_earn.get("surprise_pct") is not None:
                         result["earnings_surprise_pct"] = fh_earn.get("surprise_pct")
                         result["earnings_quarter"]       = fh_earn.get("quarter")
                         result["earnings_actual_eps"]    = fh_earn.get("actual_eps")
                         result["earnings_est_eps"]       = fh_earn.get("est_eps")
+
+                    # ── 3. Basic financials (/stock/metric) ────────────────────
+                    if not fh_basic.get("error"):
+                        result["fh_pe_ttm"]          = fh_basic.get("pe_ttm")
+                        result["fh_pb"]              = fh_basic.get("pb")
+                        result["fh_ps_ttm"]          = fh_basic.get("ps_ttm")
+                        result["fh_roe_ttm"]         = fh_basic.get("roe_ttm")
+                        result["fh_roa_ttm"]         = fh_basic.get("roa_ttm")
+                        result["fh_gross_margin"]    = fh_basic.get("gross_margin_ttm")
+                        result["fh_net_margin"]      = fh_basic.get("net_margin_ttm")
+                        result["fh_current_ratio"]   = fh_basic.get("current_ratio")
+                        result["fh_debt_to_equity"]  = fh_basic.get("debt_to_equity")
+                        result["fh_revenue_growth_3y"] = fh_basic.get("revenue_growth_3y")
+                        result["fh_revenue_growth_5y"] = fh_basic.get("revenue_growth_5y")
+                        result["fh_eps_growth_3y"]   = fh_basic.get("eps_growth_3y")
+                        result["fh_eps_growth_5y"]   = fh_basic.get("eps_growth_5y")
+                        # Fill in fields yfinance may have missed
+                        if result.get("beta") is None:
+                            result["beta"] = fh_basic.get("beta")
+                        if result.get("week_52_high") is None:
+                            result["week_52_high"] = fh_basic.get("week_52_high")
+                        if result.get("week_52_low") is None:
+                            result["week_52_low"] = fh_basic.get("week_52_low")
+                        if result.get("dividend_yield") is None:
+                            result["dividend_yield"] = fh_basic.get("dividend_yield")
+                        # Recalculate 52w proximity with Finnhub data if yfinance failed
+                        _price = result.get("current_price")
+                        if _price and result.get("pct_from_52w_high") is None:
+                            _fh52h = fh_basic.get("week_52_high")
+                            _fh52l = fh_basic.get("week_52_low")
+                            if _fh52h:
+                                result["pct_from_52w_high"] = round((_price - _fh52h) / _fh52h * 100, 1)
+                            if _fh52l and _fh52l > 0:
+                                result["pct_from_52w_low"] = round((_price - _fh52l) / _fh52l * 100, 1)
+
+                    # ── 4. Recommendation trends (/stock/recommendation) ───────
+                    if not fh_rec.get("error") and fh_rec.get("total", 0) >= 1:
+                        result["fh_strong_buy"]  = fh_rec.get("strong_buy", 0)
+                        result["fh_buy"]         = fh_rec.get("buy", 0)
+                        result["fh_hold"]        = fh_rec.get("hold", 0)
+                        result["fh_sell"]        = fh_rec.get("sell", 0)
+                        result["fh_strong_sell"] = fh_rec.get("strong_sell", 0)
+                        result["fh_rec_total"]   = fh_rec.get("total", 0)
+
+                    # ── 5. Price target (/stock/price-target) ──────────────────
+                    if not fh_pt.get("error") and fh_pt.get("target_mean"):
+                        result["fh_target_high"]   = fh_pt.get("target_high")
+                        result["fh_target_low"]    = fh_pt.get("target_low")
+                        result["fh_target_mean"]   = fh_pt.get("target_mean")
+                        result["fh_target_median"] = fh_pt.get("target_median")
+                        # Override analyst_target if yfinance didn't return one
+                        if result.get("analyst_target") is None:
+                            result["analyst_target"] = fh_pt.get("target_mean")
+
+                    # ── 6. Insider transactions (/stock/insider-transactions) ──
+                    if not fh_ins_raw.get("error"):
+                        result["fh_insider_buys"]       = fh_ins_raw.get("buy_count", 0)
+                        result["fh_insider_sells"]      = fh_ins_raw.get("sell_count", 0)
+                        result["fh_insider_buy_value"]  = fh_ins_raw.get("buy_value", 0.0)
+                        result["fh_insider_executives"] = fh_ins_raw.get("executives", [])
+                        # Supplement yfinance insider data (use whichever is higher)
+                        if fh_ins_raw.get("buy_count", 0) > result.get("insider_buy_count", 0):
+                            result["insider_buy_count"]  = fh_ins_raw["buy_count"]
+                        if fh_ins_raw.get("sell_count", 0) > result.get("insider_sell_count", 0):
+                            result["insider_sell_count"] = fh_ins_raw["sell_count"]
+
             except Exception:
                 pass
 

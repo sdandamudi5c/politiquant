@@ -86,18 +86,47 @@ def _score_internal(fund: dict, pol_buys_30d: int = 0) -> "tuple[float, list[str
             _add("analyst_upside", -15, f"⚠️ Stock well above analyst target ({upside:.0f}%) (−15)")
 
     # ── Analyst recommendation (max +12, min -15) ────────────────────────────
-    rating = (fund.get("analyst_rating") or "").lower()
-    n_ana  = fund.get("num_analyst_opinions") or 0
-    if "strong buy" in rating:
-        _add("analyst_rec", 12,  f"⭐ Strong Buy ({n_ana} analysts) (+12)")
-    elif rating == "buy":
-        _add("analyst_rec",  7,  f"⭐ Buy consensus ({n_ana} analysts) (+7)")
-    elif "hold" in rating or "neutral" in rating:
-        _add("analyst_rec",  2,  f"↔️ Hold consensus ({n_ana} analysts) (+2)")
-    elif "underperform" in rating:
-        _add("analyst_rec", -8,  f"🔻 Underperform consensus ({n_ana} analysts) (−8)")
-    elif "sell" in rating:
-        _add("analyst_rec", -15, f"🔻 Sell consensus ({n_ana} analysts) (−15)")
+    # Prefer Finnhub count-based data (continuous weighted score).
+    # Falls back to yfinance rating string if Finnhub counts unavailable.
+    _fh_sb  = int(fund.get("fh_strong_buy",  0) or 0)
+    _fh_b   = int(fund.get("fh_buy",         0) or 0)
+    _fh_h   = int(fund.get("fh_hold",        0) or 0)
+    _fh_s   = int(fund.get("fh_sell",        0) or 0)
+    _fh_ss  = int(fund.get("fh_strong_sell", 0) or 0)
+    _fh_tot = _fh_sb + _fh_b + _fh_h + _fh_s + _fh_ss
+
+    if _fh_tot >= 3:
+        # Weighted score: strongBuy=+2, buy=+1, hold=0, sell=−1, strongSell=−2
+        _weighted  = (_fh_sb * 2 + _fh_b - _fh_s - _fh_ss * 2) / _fh_tot
+        _buy_pct   = (_fh_sb + _fh_b) / _fh_tot * 100
+        _sell_pct  = (_fh_s  + _fh_ss) / _fh_tot * 100
+        _bull_str  = f"{_fh_sb}SB+{_fh_b}B" if _fh_sb else f"{_fh_b}B"
+        if _weighted >= 1.5:
+            _add("analyst_rec", 12, f"⭐ Strong Buy consensus ({_bull_str} / {_fh_tot} analysts) (+12)")
+        elif _weighted >= 0.8 or _buy_pct >= 70:
+            _add("analyst_rec",  8, f"⭐ Buy consensus ({_buy_pct:.0f}% bullish, {_fh_tot} analysts) (+8)")
+        elif _weighted >= 0.2:
+            _add("analyst_rec",  5, f"⭐ Lean-buy consensus ({_buy_pct:.0f}% bullish, {_fh_tot} analysts) (+5)")
+        elif _weighted >= -0.2:
+            _add("analyst_rec",  2, f"↔️ Hold consensus ({_fh_tot} analysts) (+2)")
+        elif _weighted >= -0.8:
+            _add("analyst_rec", -8, f"🔻 Lean-sell consensus ({_sell_pct:.0f}% bearish, {_fh_tot} analysts) (−8)")
+        else:
+            _add("analyst_rec", -15, f"🔻 Sell consensus ({_sell_pct:.0f}% bearish, {_fh_tot} analysts) (−15)")
+    else:
+        # Fallback: yfinance rating string
+        rating = (fund.get("analyst_rating") or "").lower()
+        n_ana  = fund.get("num_analyst_opinions") or 0
+        if "strong buy" in rating:
+            _add("analyst_rec", 12,  f"⭐ Strong Buy ({n_ana} analysts) (+12)")
+        elif rating == "buy":
+            _add("analyst_rec",  7,  f"⭐ Buy consensus ({n_ana} analysts) (+7)")
+        elif "hold" in rating or "neutral" in rating:
+            _add("analyst_rec",  2,  f"↔️ Hold consensus ({n_ana} analysts) (+2)")
+        elif "underperform" in rating:
+            _add("analyst_rec", -8,  f"🔻 Underperform consensus ({n_ana} analysts) (−8)")
+        elif "sell" in rating:
+            _add("analyst_rec", -15, f"🔻 Sell consensus ({n_ana} analysts) (−15)")
 
     # ── RSI mean-reversion (max +7, min -12) ─────────────────────────────────
     # Strict: only extreme oversold gets full points. Neutral = 0, not +4.
@@ -371,12 +400,17 @@ def _score_internal(fund: dict, pol_buys_30d: int = 0) -> "tuple[float, list[str
             _add("short_interest", -6, f"📊 Very high short interest ({spf:.0f}% float) (−6)")
 
     # ── Insider buying (SEC Form 4 — open market purchases only) ────────────
-    # CEO/CFO buying their OWN stock with real money = strong conviction signal
-    ins_score = fund.get("insider_buy_score", 0) or 0
-    ins_buys  = fund.get("insider_buy_count", 0) or 0
-    ins_sells = fund.get("insider_sell_count", 0) or 0
+    # CEO/CFO buying their OWN stock with real money = strong conviction signal.
+    # Merge yfinance + Finnhub data — use whichever source has more activity.
+    ins_score  = fund.get("insider_buy_score", 0) or 0
+    ins_buys   = max(int(fund.get("insider_buy_count",  0) or 0),
+                     int(fund.get("fh_insider_buys",    0) or 0))
+    ins_sells  = max(int(fund.get("insider_sell_count", 0) or 0),
+                     int(fund.get("fh_insider_sells",   0) or 0))
     ceo_bought = fund.get("insider_ceo_bought", False)
     cfo_bought = fund.get("insider_cfo_bought", False)
+    # If Finnhub found executive buyers, record names for the reason string
+    _fh_execs  = fund.get("fh_insider_executives") or []
 
     if ceo_bought and cfo_bought:
         _add("insider", 8, "🏦 CEO + CFO both buying open-market — very strong insider conviction (+8)")
@@ -385,9 +419,11 @@ def _score_internal(fund: dict, pol_buys_30d: int = 0) -> "tuple[float, list[str
     elif cfo_bought:
         _add("insider", 5, "🏦 CFO buying own stock open-market — strong insider signal (+5)")
     elif ins_buys >= 3:
-        _add("insider", 4, f"🏦 {ins_buys} insiders buying open-market in last 90 days (+4)")
+        _name_str = f" ({', '.join(_fh_execs[:2])})" if _fh_execs else ""
+        _add("insider", 4, f"🏦 {ins_buys} insiders buying open-market in last 90 days{_name_str} (+4)")
     elif ins_buys >= 1:
-        _add("insider", 2, f"🏦 Insider open-market purchase detected (+2)")
+        _name_str = f" ({_fh_execs[0]})" if _fh_execs else ""
+        _add("insider", 2, f"🏦 Insider open-market purchase detected{_name_str} (+2)")
     elif ins_sells >= 5 and ins_buys == 0:
         _add("insider", -4, f"📉 Heavy insider selling ({ins_sells} sales, 0 buys) (−4)")
     elif ins_sells >= 3 and ins_buys == 0:

@@ -290,6 +290,256 @@ def fetch_earnings_surprise(ticker: str, api_key: str = None) -> dict:
     }
 
 
+# ── Basic financials (key ratios) ─────────────────────────────────────────────
+
+def fetch_basic_financials(ticker: str, api_key: str = None) -> dict:
+    """
+    GET /stock/metric?symbol=X&metric=all
+
+    Returns a rich set of financial ratios and growth rates — all in ONE call.
+    Covers: PE, PB, PS, ROE, ROA, gross/net margins, current ratio,
+    debt/equity, revenue & EPS growth (3yr/5yr), 52-week high/low, beta.
+
+    Returns
+    -------
+    {
+        "pe_ttm":            float | None,
+        "pb":                float | None,   # price/book
+        "ps_ttm":            float | None,   # price/sales TTM
+        "roe_ttm":           float | None,   # % return on equity TTM
+        "roa_ttm":           float | None,   # % return on assets
+        "gross_margin_ttm":  float | None,   # %
+        "net_margin_ttm":    float | None,   # %
+        "current_ratio":     float | None,
+        "debt_to_equity":    float | None,   # %
+        "revenue_growth_3y": float | None,   # % CAGR
+        "revenue_growth_5y": float | None,   # % CAGR
+        "eps_growth_3y":     float | None,   # % CAGR
+        "eps_growth_5y":     float | None,   # % CAGR
+        "eps_ttm":           float | None,
+        "week_52_high":      float | None,
+        "week_52_low":       float | None,
+        "beta":              float | None,
+        "dividend_yield":    float | None,   # decimal (e.g. 0.0041)
+        "error":             None | str,
+    }
+    """
+    key = api_key or get_api_key()
+    _empty = {
+        "pe_ttm": None, "pb": None, "ps_ttm": None, "roe_ttm": None,
+        "roa_ttm": None, "gross_margin_ttm": None, "net_margin_ttm": None,
+        "current_ratio": None, "debt_to_equity": None,
+        "revenue_growth_3y": None, "revenue_growth_5y": None,
+        "eps_growth_3y": None, "eps_growth_5y": None, "eps_ttm": None,
+        "week_52_high": None, "week_52_low": None, "beta": None,
+        "dividend_yield": None,
+    }
+    if not key:
+        return {**_empty, "error": "No Finnhub API key"}
+
+    data = _get("stock/metric", {"symbol": ticker.upper(), "metric": "all"}, key)
+    if isinstance(data, dict) and data.get("_error"):
+        return {**_empty, "error": data["_error"]}
+
+    m = (data.get("metric") or {}) if isinstance(data, dict) else {}
+
+    def _v(key_name):
+        val = m.get(key_name)
+        return float(val) if val is not None else None
+
+    return {
+        "pe_ttm":            _v("peTTM") or _v("peBasicExclExtraTTM"),
+        "pb":                _v("pbAnnual"),
+        "ps_ttm":            _v("psTTM"),
+        "roe_ttm":           _v("roeTTM") or _v("roeRfy"),
+        "roa_ttm":           _v("roaRfy") or _v("roaTTM"),
+        "gross_margin_ttm":  _v("grossMarginTTM") or _v("grossMarginAnnual"),
+        "net_margin_ttm":    _v("netProfitMarginTTM") or _v("netProfitMarginAnnual"),
+        "current_ratio":     _v("currentRatioAnnual") or _v("currentRatioQuarterly"),
+        "debt_to_equity":    _v("totalDebt/totalEquityAnnual"),
+        "revenue_growth_3y": _v("revenueGrowth3Y"),
+        "revenue_growth_5y": _v("revenueGrowth5Y"),
+        "eps_growth_3y":     _v("epsGrowth3Y"),
+        "eps_growth_5y":     _v("epsGrowth5Y"),
+        "eps_ttm":           _v("epsTTM") or _v("epsBasicExclExtraItemsTTM"),
+        "week_52_high":      _v("52WeekHigh"),
+        "week_52_low":       _v("52WeekLow"),
+        "beta":              _v("beta"),
+        "dividend_yield":    _v("dividendYieldIndicatedAnnual"),
+        "error":             None,
+    }
+
+
+# ── Analyst recommendation trends ──────────────────────────────────────────────
+
+def fetch_recommendation_trends(ticker: str, api_key: str = None) -> dict:
+    """
+    GET /stock/recommendation?symbol=X
+
+    Returns analyst consensus as COUNTS (strong-buy / buy / hold / sell /
+    strong-sell) for the most recent period.  Much richer than a single
+    rating string — allows a continuous weighted score.
+
+    Returns
+    -------
+    {
+        "strong_buy":   int,
+        "buy":          int,
+        "hold":         int,
+        "sell":         int,
+        "strong_sell":  int,
+        "total":        int,
+        "period":       str,   # e.g. "2024-01-01"
+        "error":        None | str,
+    }
+    """
+    key = api_key or get_api_key()
+    _empty = {"strong_buy": 0, "buy": 0, "hold": 0,
+              "sell": 0, "strong_sell": 0, "total": 0, "period": ""}
+    if not key:
+        return {**_empty, "error": "No Finnhub API key"}
+
+    data = _get("stock/recommendation", {"symbol": ticker.upper()}, key)
+    if isinstance(data, dict) and data.get("_error"):
+        return {**_empty, "error": data["_error"]}
+
+    if not isinstance(data, list) or not data:
+        return {**_empty, "error": None}
+
+    latest = data[0]   # most recent period
+    sb  = int(latest.get("strongBuy",   0) or 0)
+    b   = int(latest.get("buy",         0) or 0)
+    h   = int(latest.get("hold",        0) or 0)
+    s   = int(latest.get("sell",        0) or 0)
+    ss  = int(latest.get("strongSell",  0) or 0)
+
+    return {
+        "strong_buy":   sb,
+        "buy":          b,
+        "hold":         h,
+        "sell":         s,
+        "strong_sell":  ss,
+        "total":        sb + b + h + s + ss,
+        "period":       latest.get("period", ""),
+        "error":        None,
+    }
+
+
+# ── Analyst price target ───────────────────────────────────────────────────────
+
+def fetch_price_target(ticker: str, api_key: str = None) -> dict:
+    """
+    GET /stock/price-target?symbol=X
+
+    Returns the analyst price-target consensus: high, low, mean, median.
+    Used as a fallback / supplement when yfinance doesn't return a target.
+
+    Returns
+    -------
+    {
+        "target_high":    float | None,
+        "target_low":     float | None,
+        "target_mean":    float | None,
+        "target_median":  float | None,
+        "last_updated":   str | None,
+        "error":          None | str,
+    }
+    """
+    key = api_key or get_api_key()
+    _empty = {"target_high": None, "target_low": None,
+              "target_mean": None, "target_median": None, "last_updated": None}
+    if not key:
+        return {**_empty, "error": "No Finnhub API key"}
+
+    data = _get("stock/price-target", {"symbol": ticker.upper()}, key)
+    if isinstance(data, dict) and data.get("_error"):
+        return {**_empty, "error": data["_error"]}
+
+    if not isinstance(data, dict):
+        return {**_empty, "error": None}
+
+    def _fv(k):
+        v = data.get(k)
+        return float(v) if v else None
+
+    return {
+        "target_high":    _fv("targetHigh"),
+        "target_low":     _fv("targetLow"),
+        "target_mean":    _fv("targetMean"),
+        "target_median":  _fv("targetMedian"),
+        "last_updated":   data.get("lastUpdated"),
+        "error":          None,
+    }
+
+
+# ── Insider transactions (Form 4) ─────────────────────────────────────────────
+
+def fetch_insider_transactions(ticker: str, api_key: str = None) -> dict:
+    """
+    GET /stock/insider-transactions?symbol=X&from=YYYY-MM-DD
+
+    Returns open-market insider purchases and sales (last 90 days).
+    Excludes derivative transactions (options exercises).
+
+    Returns
+    -------
+    {
+        "buy_count":   int,            # open-market purchases
+        "sell_count":  int,            # open-market sales
+        "buy_value":   float,          # total $ value of purchases
+        "executives":  list[str],      # names of buyers (up to 5)
+        "error":       None | str,
+    }
+    """
+    key = api_key or get_api_key()
+    _empty = {"buy_count": 0, "sell_count": 0, "buy_value": 0.0, "executives": []}
+    if not key:
+        return {**_empty, "error": "No Finnhub API key"}
+
+    from_date = (date.today() - timedelta(days=90)).isoformat()
+    data = _get("stock/insider-transactions", {
+        "symbol": ticker.upper(),
+        "from":   from_date,
+        "to":     date.today().isoformat(),
+    }, key)
+
+    if isinstance(data, dict) and data.get("_error"):
+        return {**_empty, "error": data["_error"]}
+
+    transactions = []
+    if isinstance(data, dict):
+        transactions = data.get("data") or []
+
+    buy_count  = 0
+    sell_count = 0
+    buy_value  = 0.0
+    executives: list = []
+
+    for txn in transactions:
+        if txn.get("isDerivative"):
+            continue           # skip options exercises — not real money
+        code   = txn.get("transactionCode", "")
+        change = txn.get("change") or 0
+        price  = txn.get("transactionPrice") or 0
+        name   = txn.get("name", "")
+
+        if code == "P" and change > 0:      # open-market PURCHASE
+            buy_count  += 1
+            buy_value  += float(change) * float(price)
+            if name and name not in executives:
+                executives.append(name)
+        elif code == "S" and change < 0:    # open-market SALE
+            sell_count += 1
+
+    return {
+        "buy_count":   buy_count,
+        "sell_count":  sell_count,
+        "buy_value":   round(buy_value, 2),
+        "executives":  executives[:5],
+        "error":       None,
+    }
+
+
 # ── Batch helper ───────────────────────────────────────────────────────────────
 
 def fetch_batch(tickers: list, api_key: str = None) -> dict:
@@ -311,8 +561,12 @@ def fetch_batch(tickers: list, api_key: str = None) -> dict:
     results = {}
     for ticker in tickers:
         results[ticker] = {
-            "sentiment": fetch_news_sentiment(ticker, api_key=key),
-            "earnings":  fetch_earnings_surprise(ticker, api_key=key),
+            "sentiment":        fetch_news_sentiment(ticker,         api_key=key),
+            "earnings":         fetch_earnings_surprise(ticker,      api_key=key),
+            "basic_financials": fetch_basic_financials(ticker,       api_key=key),
+            "recommendation":   fetch_recommendation_trends(ticker,  api_key=key),
+            "price_target":     fetch_price_target(ticker,           api_key=key),
+            "insider":          fetch_insider_transactions(ticker,   api_key=key),
         }
     return results
 
