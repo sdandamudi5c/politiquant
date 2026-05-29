@@ -339,3 +339,127 @@ def clear_cache() -> None:
     """Force-refresh news cache on next call."""
     with _CACHE_LOCK:
         _CACHE.pop(_NEWS_CACHE_KEY, None)
+
+
+# ── Trump family name patterns ─────────────────────────────────────────────────
+_TRUMP_FAMILY = [
+    r"\btrump\b",
+    r"\bivanka\b",
+    r"\bjared\s+kushner\b", r"\bkushner\b",
+    r"\bdonald\s+trump\s+jr\b", r"\btrump\s+jr\b",
+    r"\beric\s+trump\b",
+    r"\blara\s+trump\b",
+    r"\bmelania\b",
+    r"\bbarron\s+trump\b",
+    r"\btrump\s+media\b",   r"\btruth\s+social\b",
+    r"\bdjt\b",             r"\btrump\s+organization\b",
+]
+
+# ── All known tickers (superset used for extraction from headlines) ────────────
+_ALL_KNOWN_TICKERS: set[str] = set(
+    v for v in _COMPANY_TO_TICKER.values() if v
+)
+# Add extra well-known tickers not in company map
+_ALL_KNOWN_TICKERS.update([
+    "DJT", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA",
+    "INTC", "AMD", "QCOM", "AVGO", "ORCL", "CRM", "IBM", "CSCO",
+    "JPM", "GS", "MS", "BAC", "C", "WFC", "BLK", "V", "MA",
+    "PFE", "MRNA", "JNJ", "UNH", "LLY", "MRK", "ABBV",
+    "XOM", "CVX", "BA", "LMT", "RTX", "NOC", "GE", "F", "GM",
+    "WMT", "COST", "TGT", "HD", "SBUX", "MCD", "NKE", "DIS",
+    "BABA", "BIDU", "JD", "TCEHY", "NVO", "SHEL", "BP",
+    "COIN", "PYPL", "SHOP", "SQ", "PLTR", "SNOW", "UBER",
+    "SPY", "QQQ", "GLD", "SLV", "USO",
+])
+
+
+def get_trump_family_news_feed(hours: int = 48) -> list[dict]:
+    """
+    Return recent news articles that mention Trump or his family AND reference
+    any recognisable stock/company.  Results are sorted newest-first.
+
+    Each item:
+        {
+          "title":     str,
+          "link":      str,
+          "pubDate":   str,
+          "tickers":   list[str],    # extracted tickers / company mentions
+          "companies": list[str],    # human-readable company names
+          "sentiment": str,          # "positive" | "negative" | "neutral"
+          "score":     int,          # raw sentiment score
+          "speaker":   str,          # which family member is mentioned
+        }
+    """
+    all_news = _fetch_all_political_news()
+    results  = []
+
+    for item in all_news:
+        text  = _text_of(item)
+        title = item.get("title", "")
+
+        # Must mention a Trump family member
+        speakers = [
+            pat.strip(r"\b").replace(r"\s+", " ").replace("\\", "")
+            for pat in _TRUMP_FAMILY
+            if re.search(pat, text, re.I)
+        ]
+        if not speakers:
+            continue
+
+        # Determine the most specific speaker name
+        speaker = "Trump family"
+        for pat, label in [
+            (r"\bivanka\b",            "Ivanka Trump"),
+            (r"\bkushner\b",           "Jared Kushner"),
+            (r"\btrump\s+jr\b",        "Donald Trump Jr."),
+            (r"\beric\s+trump\b",      "Eric Trump"),
+            (r"\blara\s+trump\b",      "Lara Trump"),
+            (r"\bmelania\b",           "Melania Trump"),
+            (r"\btrump\b",             "Donald Trump"),
+        ]:
+            if re.search(pat, text, re.I):
+                speaker = label
+                break
+
+        # Extract mentioned companies / tickers
+        found_tickers:  list[str] = []
+        found_companies: list[str] = []
+        for name, ticker in _COMPANY_TO_TICKER.items():
+            if not name or len(name) <= 2:
+                continue
+            if name in text:
+                if ticker and ticker not in found_tickers:
+                    found_tickers.append(ticker)
+                if name.title() not in found_companies:
+                    found_companies.append(name.title())
+
+        # Also scan for bare ticker symbols near the title text
+        # (only in ALL-CAPS sequences 2-5 chars that are known tickers)
+        for match in re.finditer(r'\b([A-Z]{2,5})\b', title):
+            sym = match.group(1)
+            if sym in _ALL_KNOWN_TICKERS and sym not in found_tickers:
+                found_tickers.append(sym)
+
+        # Score sentiment
+        score = _sentiment_score(text)
+        if score > 0:
+            sentiment = "positive"
+        elif score < 0:
+            sentiment = "negative"
+        else:
+            sentiment = "neutral"
+
+        results.append({
+            "title":     title,
+            "link":      item.get("link", ""),
+            "pubDate":   item.get("pubDate", ""),
+            "tickers":   found_tickers[:6],
+            "companies": found_companies[:6],
+            "sentiment": sentiment,
+            "score":     score,
+            "speaker":   speaker,
+        })
+
+    # Sort: highest absolute sentiment score first, then by position in feed
+    results.sort(key=lambda x: abs(x["score"]), reverse=True)
+    return results

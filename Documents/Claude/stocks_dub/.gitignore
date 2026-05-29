@@ -53,6 +53,7 @@ party_cache.json
 portfolio_alert_state.json
 score_history.json
 watchlist.json
+trump_holdings.json
 
 # ──────────────────────────────────────────────────────────────────────────────
 # TEMP FILES — from atomic cache writes (should never persist, but just in case)
