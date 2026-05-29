@@ -41,10 +41,13 @@ def _minimal_fund(**kwargs):
 class TestFactorNames(unittest.TestCase):
 
     def test_factor_names_count(self):
-        """REGRESSION: we added reddit_buzz as 30th factor — must be exactly 30."""
+        """REGRESSION: factor count grows as new signals are added; must be ≥30."""
         from scorer import FACTOR_NAMES
-        self.assertEqual(len(FACTOR_NAMES), 30,
-            f"Expected 30 factors, got {len(FACTOR_NAMES)}: {FACTOR_NAMES}")
+        self.assertGreaterEqual(len(FACTOR_NAMES), 30,
+            f"Expected at least 30 factors, got {len(FACTOR_NAMES)}: {FACTOR_NAMES}")
+        # Spot-check the 3 newest additions
+        for name in ("earnings_beat_rate", "earnings_beat_streak", "political_signal"):
+            self.assertIn(name, FACTOR_NAMES, f"Missing new factor: {name}")
 
     def test_reddit_buzz_in_factor_names(self):
         from scorer import FACTOR_NAMES

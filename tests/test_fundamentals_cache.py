@@ -193,9 +193,9 @@ class TestFundamentalsSemaphore(unittest.TestCase):
         Semaphore must cap at _MAX_CONCURRENT.
         """
         import fundamentals
-        self.assertEqual(fundamentals._MAX_CONCURRENT, 4,
-            "Semaphore must cap at 4 to prevent DNS thread exhaustion "
-            "(was 8 before the crash fix)")
+        self.assertLessEqual(fundamentals._MAX_CONCURRENT, 4,
+            "Semaphore must cap at ≤4 to prevent fd exhaustion "
+            "(reduced to 3 after macOS 'Too many open files' crash fix)")
         self.assertIsNotNone(fundamentals._FETCH_SEMAPHORE)
 
     def test_semaphore_limits_concurrent_fetches(self):
