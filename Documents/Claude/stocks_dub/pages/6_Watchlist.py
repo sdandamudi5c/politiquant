@@ -202,6 +202,10 @@ def _run_watchlist_score(tickers: list[str], trades_df: pd.DataFrame):
                 "inst_buyer_count":      fund.get("inst_buyer_count", 0),
                 "analyst_upgrades_30d":  fund.get("analyst_upgrades_30d", 0),
                 "analyst_downgrades_30d":fund.get("analyst_downgrades_30d", 0),
+                "political_score_mod":   fund.get("political_score_mod", 0),
+                "political_flag":        fund.get("political_flag"),
+                "political_sentiment":   fund.get("political_sentiment", "neutral"),
+                "political_headlines":   fund.get("political_headlines", []),
                 "reasons":         reasons,
                 "factor_pts":      factor_pts,
                 "pred":            pred,
@@ -460,6 +464,29 @@ for r in results:
                 f"</div>",
                 unsafe_allow_html=True,
             )
+
+        # Political / presidential flag (shown prominently above other flags)
+        _pol_mod  = r.get("political_score_mod", 0)
+        _pol_flag = r.get("political_flag")
+        _pol_heads = r.get("political_headlines", [])
+        if _pol_flag and _pol_mod != 0:
+            _pol_col = "#2ecc71" if _pol_mod > 0 else "#e74c3c"
+            _pol_bg  = "#0a2a0a" if _pol_mod > 0 else "#2a0a0a"
+            st.markdown(
+                f"<div style='background:{_pol_bg}; border:1px solid {_pol_col}55; "
+                f"border-radius:6px; padding:8px 12px; margin:6px 0;'>"
+                f"<span style='color:{_pol_col}; font-weight:700; font-size:0.85rem;'>"
+                f"{_pol_flag}</span>"
+                + (f"<br><span style='color:#aaa; font-size:0.75rem; font-style:italic;'>"
+                   f"\"{_pol_heads[0][:100]}...\"</span>" if _pol_heads else "")
+                + "</div>",
+                unsafe_allow_html=True,
+            )
+            if len(_pol_heads) > 1:
+                with st.expander("More political headlines", expanded=False):
+                    for h in _pol_heads[1:]:
+                        st.markdown(f"<span style='font-size:0.8rem; color:#aaa;'>• {h}</span>",
+                                    unsafe_allow_html=True)
 
         # Flags row
         flags = []

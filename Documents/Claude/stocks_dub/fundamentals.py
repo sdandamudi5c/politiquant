@@ -122,6 +122,11 @@ def fetch_fundamentals(ticker: str) -> dict:
         "earnings_surprise_pct":   None,
         "earnings_beat_rate":      None,   # fraction of last 8 qtrs that beat (0.0–1.0)
         "earnings_beat_streak":    0,      # consecutive quarters beating estimates
+        # Political / presidential signal (1-hour cache, free RSS)
+        "political_score_mod":     0,
+        "political_flag":          None,
+        "political_sentiment":     "neutral",
+        "political_headlines":     [],
         # Short interest
         "short_pct_float":         None,
         "short_days_to_cover":     None,
@@ -788,6 +793,20 @@ def fetch_fundamentals(ticker: str) -> dict:
 
       except Exception as e:
           result["error"] = str(e)
+
+    # ── Political / presidential signal (1-hour cache, NOT stored in 24h cache) ─
+    # Runs outside the main try/except so a political fetch failure never breaks
+    # the rest of the fundamentals result.  Uses its own 1-hour in-memory cache
+    # so it stays fresh throughout the day without re-hitting main SQLite cache.
+    try:
+        from political_signal import get_political_signal as _get_pol
+        _pol = _get_pol(ticker, result.get("company_name", ""))
+        result["political_score_mod"]  = _pol.get("score_mod", 0)
+        result["political_flag"]       = _pol.get("flag")
+        result["political_sentiment"]  = _pol.get("sentiment", "neutral")
+        result["political_headlines"]  = _pol.get("headlines", [])
+    except Exception:
+        pass
 
     _save_cache(ticker, result)
     return result

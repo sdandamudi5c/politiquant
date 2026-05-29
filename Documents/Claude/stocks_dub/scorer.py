@@ -44,8 +44,9 @@ FACTOR_NAMES = [
     "short_interest", "macro", "insider", "inst", "sector",
     "breakout", "volume_surge", "earnings_timing", "analyst_revision",
     "reddit_buzz",        # 30 — retail sentiment from WSB/investing/stocks
-    "earnings_beat_rate", # 31 — fraction of last 8 quarters that beat estimates
+    "earnings_beat_rate",   # 31 — fraction of last 8 quarters that beat estimates
     "earnings_beat_streak", # 32 — consecutive quarters beating estimates
+    "political_signal",     # 33 — presidential/political news sentiment
 ]
 
 
@@ -606,6 +607,18 @@ def _score_internal(fund: dict, pol_buys_30d: int = 0) -> "tuple[float, list[str
                  f"🤳 Reddit sentiment negative ({_rcount} mentions) ({_rmod})")
     except Exception:
         pass
+
+    # ── Political / presidential signal (max +6, min -10) ────────────────────
+    _pol_mod  = int(fund.get("political_score_mod") or 0)
+    _pol_flag = fund.get("political_flag")
+    _pol_sent = fund.get("political_sentiment", "neutral")
+    if _pol_mod != 0 and _pol_flag:
+        if _pol_mod > 0:
+            _add("political_signal", _pol_mod,
+                 f"🏛️ Presidential/political TAILWIND: {_pol_flag} (+{_pol_mod})")
+        else:
+            _add("political_signal", _pol_mod,
+                 f"🏛️ Presidential/political HEADWIND: {_pol_flag} ({_pol_mod})")
 
     # Clamp to [0, 100] as a safety net
     return max(0.0, min(100.0, score)), reasons, fp
