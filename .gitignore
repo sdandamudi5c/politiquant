@@ -1,0 +1,61 @@
+# ── Virtual environment ────────────────────────────────────────────────────────
+venv/
+.venv/
+
+# ── Python bytecode ────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+
+# ── macOS ──────────────────────────────────────────────────────────────────────
+.DS_Store
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SECRETS — never commit these
+# ──────────────────────────────────────────────────────────────────────────────
+# Finnhub + FRED API keys
+api_keys.json
+# Gmail credentials + alert thresholds
+email_config.json
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PERSONAL DATA — your actual portfolio holdings
+# ──────────────────────────────────────────────────────────────────────────────
+# Your tickers, quantities, cost basis
+portfolio.json
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CACHE FILES — rebuilt automatically on first run, no need to version
+# ──────────────────────────────────────────────────────────────────────────────
+# SQLite cache database (replaces all individual JSON cache files)
+cache.db
+cache.db-wal
+cache.db-shm
+# Legacy JSON cache files (kept for backward compatibility during migration)
+fundamentals_cache.json
+cached_trades.json
+filing_index_cache.json
+senate_index_cache.json
+price_cache.json
+fred_cache.json
+insider_cache.json
+institutional_cache.json
+sector_cache.json
+sector_stocks_cache.json
+trends_cache.json
+sentiment_cache.json
+party_cache.json
+
+# ──────────────────────────────────────────────────────────────────────────────
+# STATE FILES — runtime job state and alert tracking
+# ──────────────────────────────────────────────────────────────────────────────
+.job_*.json
+portfolio_alert_state.json
+score_history.json
+watchlist.json
+trump_holdings.json
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TEMP FILES — from atomic cache writes (should never persist, but just in case)
+# ──────────────────────────────────────────────────────────────────────────────
+*.tmp
