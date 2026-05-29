@@ -14,7 +14,7 @@ import yfinance as yf
 import cache_db as _cdb
 
 SCREEN_THRESHOLD = 5.0  # percent
-CACHE_VERSION = 10  # bump this whenever new fields are added
+CACHE_VERSION = 11  # bump this whenever new fields are added
 _NAMESPACE = "fundamentals"
 _CACHE_TTL = 24 * 3600   # 24 hours
 
@@ -120,6 +120,8 @@ def fetch_fundamentals(ticker: str) -> dict:
         "news_sentiment_score":    None,
         "recent_headlines":        [],
         "earnings_surprise_pct":   None,
+        "earnings_beat_rate":      None,   # fraction of last 8 qtrs that beat (0.0–1.0)
+        "earnings_beat_streak":    0,      # consecutive quarters beating estimates
         # Short interest
         "short_pct_float":         None,
         "short_days_to_cover":     None,
@@ -705,10 +707,12 @@ def fetch_fundamentals(ticker: str) -> dict:
                 result["recent_headlines"]     = []
 
         # ── Fallback: earnings surprise from yfinance if Finnhub didn't provide ─
-        if result.get("earnings_surprise_pct") is None:
-            try:
-                eh = _pre_eh
-                if eh is not None and not (hasattr(eh, "empty") and eh.empty):
+        # Also compute beat_rate and beat_streak across all available quarters
+        try:
+            eh = _pre_eh
+            if eh is not None and not (hasattr(eh, "empty") and eh.empty):
+                # Most-recent quarter for single-quarter surprise
+                if result.get("earnings_surprise_pct") is None:
                     last   = eh.iloc[-1]
                     est    = float(last.get("epsEstimate") or last.get("EpsEstimate", 0) or 0)
                     actual = float(last.get("epsActual")   or last.get("EpsActual",   0) or 0)
@@ -716,8 +720,29 @@ def fetch_fundamentals(ticker: str) -> dict:
                         result["earnings_surprise_pct"] = round(
                             (actual - est) / abs(est) * 100, 2
                         )
-            except Exception:
-                pass
+
+                # Beat rate + streak across last 8 quarters
+                beats = []
+                for _, row in eh.tail(8).iterrows():
+                    try:
+                        est_q    = float(row.get("epsEstimate") or row.get("EpsEstimate") or 0)
+                        actual_q = float(row.get("epsActual")   or row.get("EpsActual")   or 0)
+                        if est_q != 0:
+                            beats.append(1 if actual_q >= est_q else 0)
+                    except Exception:
+                        pass
+                if beats:
+                    result["earnings_beat_rate"] = round(sum(beats) / len(beats), 2)
+                    # Streak = count from most-recent backwards while beating
+                    streak = 0
+                    for b in reversed(beats):
+                        if b == 1:
+                            streak += 1
+                        else:
+                            break
+                    result["earnings_beat_streak"] = streak
+        except Exception:
+            pass
 
         # ── Institutional holdings (13F filings via yfinance — 7-day cache) ──
         try:

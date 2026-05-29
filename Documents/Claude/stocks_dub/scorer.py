@@ -43,7 +43,9 @@ FACTOR_NAMES = [
     "news_sentiment", "earnings_surprise",
     "short_interest", "macro", "insider", "inst", "sector",
     "breakout", "volume_surge", "earnings_timing", "analyst_revision",
-    "reddit_buzz",   # 30th factor — retail sentiment from WSB/investing/stocks
+    "reddit_buzz",        # 30 — retail sentiment from WSB/investing/stocks
+    "earnings_beat_rate", # 31 — fraction of last 8 quarters that beat estimates
+    "earnings_beat_streak", # 32 — consecutive quarters beating estimates
 ]
 
 
@@ -382,6 +384,33 @@ def _score_internal(fund: dict, pol_buys_30d: int = 0) -> "tuple[float, list[str
         else:
             _add("earnings_surprise", -6, f"⚠️ Last quarter EPS missed by {abs(surp):.0f}% (−6)")
 
+    # ── Earnings beat rate & streak (max +6, min -4) ─────────────────────────
+    # Consistent beaters are attractive pre-earnings setups; chronic missers are risky
+    _beat_rate   = _n(fund.get("earnings_beat_rate"))    # 0.0–1.0 fraction of beats
+    _beat_streak = int(fund.get("earnings_beat_streak") or 0)
+    if _beat_rate is not None:
+        if _beat_rate >= 0.875:   # beat 7 of last 8
+            _add("earnings_beat_rate",  3,
+                 f"🎯 Beat EPS estimates {_beat_rate*100:.0f}% of last 8 quarters — serial outperformer (+3)")
+        elif _beat_rate >= 0.75:  # beat 6 of last 8
+            _add("earnings_beat_rate",  2,
+                 f"🎯 Beat EPS estimates {_beat_rate*100:.0f}% of last 8 quarters (+2)")
+        elif _beat_rate >= 0.625: # beat 5 of last 8
+            _add("earnings_beat_rate",  1,
+                 f"📊 Beat EPS estimates {_beat_rate*100:.0f}% of last 8 quarters (+1)")
+        elif _beat_rate <= 0.375: # missed 5+ of last 8
+            _add("earnings_beat_rate", -3,
+                 f"⚠️ Beat EPS estimates only {_beat_rate*100:.0f}% of last 8 quarters (−3)")
+        elif _beat_rate <= 0.25:  # missed 6+ of last 8
+            _add("earnings_beat_rate", -4,
+                 f"⚠️ Chronic EPS misser — only {_beat_rate*100:.0f}% beat rate (−4)")
+    if _beat_streak >= 4:
+        _add("earnings_beat_streak",  3,
+             f"🔥 Beat EPS estimates {_beat_streak} quarters in a row — momentum (+3)")
+    elif _beat_streak >= 2:
+        _add("earnings_beat_streak",  1,
+             f"📈 Beat EPS estimates {_beat_streak} consecutive quarters (+1)")
+
     # ── Short interest (max +3, min -6) ──────────────────────────────────────
     spf = _n(fund.get("short_pct_float"))   # % of float sold short
     m1  = _n(fund.get("mom_1m_pct"))
@@ -532,18 +561,34 @@ def _score_internal(fund: dict, pol_buys_30d: int = 0) -> "tuple[float, list[str
         else:
             _add("volume_surge", 2, f"🔊 {_vol_ratio:.1f}× normal volume — elevated interest (+2)")
 
-    # ── Earnings timing (risk penalty for imminent earnings) ──────────────────
-    _earn_days = fund.get("earnings_days_until")
+    # ── Earnings timing — context-aware (max +4, min -5) ─────────────────────
+    # Serial beaters near earnings = opportunity; chronic missers = risk
+    _earn_days   = fund.get("earnings_days_until")
+    _beat_rate_t = _n(fund.get("earnings_beat_rate"))
+    _streak_t    = int(fund.get("earnings_beat_streak") or 0)
     if _earn_days is not None:
-        if _earn_days <= 2:
-            _add("earnings_timing", -5,
-                 f"📅 Earnings in {_earn_days} day(s) — binary event risk, high uncertainty (−5)")
-        elif _earn_days <= 7:
-            _add("earnings_timing", -3,
-                 f"📅 Earnings in {_earn_days} days — near-term event risk (−3)")
+        _is_serial_beater  = (_beat_rate_t is not None and _beat_rate_t >= 0.75) or _streak_t >= 3
+        _is_chronic_misser = _beat_rate_t is not None and _beat_rate_t <= 0.375
+        if _earn_days <= 7:
+            if _is_serial_beater:
+                _add("earnings_timing",  4,
+                     f"📅 Earnings in {_earn_days}d · serial beater ({_beat_rate_t*100:.0f}% beat rate) — pre-earnings setup (+4)")
+            elif _is_chronic_misser:
+                _add("earnings_timing", -5,
+                     f"📅 Earnings in {_earn_days}d · chronic misser ({_beat_rate_t*100:.0f}% beat rate) — event risk (−5)")
+            else:
+                _add("earnings_timing", -2,
+                     f"📅 Earnings in {_earn_days} day(s) — binary event risk (−2)")
         elif _earn_days <= 14:
-            _add("earnings_timing", -1,
-                 f"📅 Earnings in {_earn_days} days — note upcoming catalyst (−1)")
+            if _is_serial_beater:
+                _add("earnings_timing",  2,
+                     f"📅 Earnings in {_earn_days}d · strong beat history — upcoming catalyst (+2)")
+            elif _is_chronic_misser:
+                _add("earnings_timing", -2,
+                     f"📅 Earnings in {_earn_days}d · weak beat history — note risk (−2)")
+            else:
+                _add("earnings_timing", -1,
+                     f"📅 Earnings in {_earn_days} days — upcoming catalyst (−1)")
 
     # ── Reddit / WallStreetBets buzz (max +5, min -4) ────────────────────────
     try:
