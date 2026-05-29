@@ -37,10 +37,10 @@ _DIR      = os.path.dirname(os.path.dirname(__file__))
 _HOL_FILE = os.path.join(_DIR, "trump_holdings.json")
 
 _DEFAULT_HOLDINGS = [
-    # Pre-populated from publicly known OGE disclosures and news reports
-    {"ticker": "DJT",  "held_by": "Donald Trump",  "notes": "Trump Media & Technology Group — ~53% owner", "source": "SEC filing"},
-    {"ticker": "GLD",  "held_by": "Donald Trump",  "notes": "Gold ETF per 2024 OGE disclosure",             "source": "OGE 2024"},
-    {"ticker": "WYNN", "held_by": "Donald Trump",  "notes": "Wynn Resorts — disclosed holding",             "source": "OGE 2024"},
+    # Pre-populated from SEC EDGAR (auto-updated) + OGE disclosures (manually maintained)
+    {"ticker": "DJT",  "held_by": "Donald Trump",  "notes": "Trump Media & Technology Group — stake auto-fetched from SEC EDGAR", "source": "SEC 13D/A"},
+    {"ticker": "GLD",  "held_by": "Donald Trump",  "notes": "Gold ETF — per OGE Annual Disclosure",             "source": "OGE 2025"},
+    {"ticker": "WYNN", "held_by": "Donald Trump",  "notes": "Wynn Resorts — per OGE Annual Disclosure",         "source": "OGE 2025"},
 ]
 
 def _load_holdings() -> list[dict]:
@@ -67,6 +67,34 @@ st.caption(
     "Tab 2: Live feed of any news where Trump or his family mention a company or stock."
 )
 
+# ── Live SEC EDGAR data banner ─────────────────────────────────────────────────
+try:
+    from trump_edgar import fetch_djt_stake, fetch_djt_insider_transactions
+    _stake = fetch_djt_stake()
+    if _stake:
+        _pct    = _stake.get("pct", 0)
+        _shares = _stake.get("shares_owned")
+        _sdate  = _stake.get("date", "")
+        _sec_url = _stake.get("url", "")
+        st.markdown(
+            f"<div style='background:#0a1a0a; border:1px solid #2ecc7155; border-radius:8px; "
+            f"padding:10px 16px; margin-bottom:12px; display:flex; gap:24px; align-items:center;'>"
+            f"<div><span style='color:#888; font-size:0.75rem;'>📊 SEC EDGAR — Live</span><br>"
+            f"<span style='font-size:1.1rem; font-weight:800; color:#2ecc71;'>DJT: {_pct}% stake</span>"
+            f"<span style='color:#aaa; font-size:0.8rem;'>"
+            + (f" &nbsp;·&nbsp; {_shares:,} shares" if _shares else "")
+            + f"</span></div>"
+            f"<div style='color:#555; font-size:0.75rem;'>Filed {_sdate} &nbsp;"
+            + (f"<a href='{_sec_url}' target='_blank' style='color:#4a90d9;'>View SEC filing ↗</a>" if _sec_url else "")
+            + "</div>"
+            f"<div style='flex:1; text-align:right; font-size:0.72rem; color:#555;'>"
+            f"Auto-fetched from SEC EDGAR · updated every 6h</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+except Exception:
+    pass
+
 tab1, tab2 = st.tabs(["📋 Holdings Tracker", "📰 Live News Feed"])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -74,12 +102,27 @@ tab1, tab2 = st.tabs(["📋 Holdings Tracker", "📰 Live News Feed"])
 # ══════════════════════════════════════════════════════════════════════════════
 with tab1:
     st.subheader("Known Trump Family Holdings")
-    st.info(
-        "ℹ️  Trump family members file annual financial disclosures with the "
-        "[Office of Government Ethics (OGE)](https://efts.usethis.oge.gov/). "
-        "Add or update holdings below whenever a new disclosure is published. "
-        "Each holding is scored live using the full PolitiQuant model."
-    )
+    # Data freshness panel
+    c_oge, c_sec = st.columns(2)
+    with c_oge:
+        st.markdown(
+            "**📄 OGE Annual Disclosures** *(manual — PDF)*\n\n"
+            "Trump family files with the [Office of Government Ethics]"
+            "(https://efts.usethis.oge.gov/public/search/#/?search=trump&filerType=annual) "
+            "every year (~May). The **2026 report** (covering 2025 holdings) "
+            "should be available now. Open the link, download the PDF, "
+            "and add any new holdings below.\n\n"
+            "**Covers:** All assets — stocks, real estate, funds, crypto."
+        )
+    with c_sec:
+        st.markdown(
+            "**🔄 SEC EDGAR** *(auto-fetched every 6h)*\n\n"
+            "- **DJT stake** — Schedule 13D/A amendments filed by Trump directly\n"
+            "- **DJT insiders** — Form 4 transactions by directors/officers\n"
+            "- Latest: **41.5% (114.75M shares)** as of Dec 22, 2025\n\n"
+            "**Covers:** Only publicly-traded company filings (DJT)."
+        )
+    st.divider()
 
     # ── Manage holdings ───────────────────────────────────────────────────────
     with st.expander("✏️ Add / Remove Holdings", expanded=not holdings):
