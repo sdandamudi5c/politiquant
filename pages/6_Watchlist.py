@@ -48,22 +48,50 @@ st.caption(
 # ── Watchlist persistence ──────────────────────────────────────────────────────
 _WL_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "watchlist.json")
 
-def _load_watchlist() -> list[str]:
+
+def _load_watchlist() -> list[dict]:
+    """Load watchlist. Handles both old format (list of strings) and new (list of dicts)."""
     try:
         with open(_WL_FILE) as f:
             data = json.load(f)
-            return sorted(set(t.upper().strip() for t in data if t.strip()))
+        result = []
+        seen = set()
+        for item in data:
+            if isinstance(item, str):
+                # Old format — migrate to dict, no price info yet
+                t = item.upper().strip()
+                if t and t not in seen:
+                    result.append({"ticker": t, "added_date": None, "added_price": None})
+                    seen.add(t)
+            elif isinstance(item, dict) and item.get("ticker"):
+                t = item["ticker"].upper().strip()
+                if t and t not in seen:
+                    result.append(item)
+                    seen.add(t)
+        return sorted(result, key=lambda x: x["ticker"])
     except Exception:
         return []
 
-def _save_watchlist(tickers: list[str]) -> None:
+
+def _save_watchlist(items: list[dict]) -> None:
     with open(_WL_FILE, "w") as f:
-        json.dump(sorted(set(tickers)), f, indent=2)
+        json.dump(items, f, indent=2)
+
+
+def _fetch_current_price(ticker: str) -> "float | None":
+    """Quick price lookup for when a ticker is added to the watchlist."""
+    try:
+        import yfinance as yf
+        info = yf.Ticker(ticker).info
+        return info.get("currentPrice") or info.get("regularMarketPrice")
+    except Exception:
+        return None
+
 
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = _load_watchlist()
 
-watchlist: list[str] = st.session_state.watchlist
+watchlist: list[dict] = st.session_state.watchlist
 
 # ── Add / Remove controls ──────────────────────────────────────────────────────
 with st.expander("✏️ Manage Watchlist", expanded=not watchlist):
@@ -80,10 +108,29 @@ with st.expander("✏️ Manage Watchlist", expanded=not watchlist):
         if st.button("➕ Add to Watchlist", key="wl_add_btn", use_container_width=True):
             new_tickers = [t.strip().upper() for t in new_input.split(",") if t.strip()]
             if new_tickers:
-                updated = sorted(set(watchlist + new_tickers))
-                st.session_state.watchlist = updated
-                _save_watchlist(updated)
-                st.success(f"Added: {', '.join(new_tickers)}")
+                existing_tickers = {w["ticker"] for w in watchlist}
+                added, skipped = [], []
+                today_str = date.today().isoformat()
+                for t in new_tickers:
+                    if t in existing_tickers:
+                        skipped.append(t)
+                    else:
+                        # Fetch price at time of adding
+                        price = _fetch_current_price(t)
+                        watchlist.append({
+                            "ticker":      t,
+                            "added_date":  today_str,
+                            "added_price": price,
+                        })
+                        existing_tickers.add(t)
+                        added.append(t)
+                watchlist.sort(key=lambda x: x["ticker"])
+                st.session_state.watchlist = watchlist
+                _save_watchlist(watchlist)
+                if added:
+                    st.success(f"Added: {', '.join(added)}")
+                if skipped:
+                    st.info(f"Already tracked: {', '.join(skipped)}")
                 st.rerun()
             else:
                 st.warning("Enter at least one ticker symbol.")
@@ -91,15 +138,17 @@ with st.expander("✏️ Manage Watchlist", expanded=not watchlist):
     with remove_col:
         st.markdown("**Remove tickers**")
         if watchlist:
+            ticker_options = [w["ticker"] for w in watchlist]
             to_remove = st.multiselect(
                 "Select to remove",
-                options=watchlist,
+                options=ticker_options,
                 key="wl_remove_select",
                 label_visibility="collapsed",
             )
             if st.button("🗑️ Remove selected", key="wl_remove_btn",
                          use_container_width=True, disabled=not to_remove):
-                updated = sorted(t for t in watchlist if t not in to_remove)
+                remove_set = set(to_remove)
+                updated = [w for w in watchlist if w["ticker"] not in remove_set]
                 st.session_state.watchlist = updated
                 _save_watchlist(updated)
                 st.success(f"Removed: {', '.join(to_remove)}")
@@ -111,16 +160,31 @@ if not watchlist:
     st.info("Your watchlist is empty. Add some tickers above to get started.")
     st.stop()
 
-# Show current watchlist as chips
-st.markdown(
-    " ".join(
+# Build a lookup: ticker → {added_date, added_price} for use in score cards
+_wl_meta: dict[str, dict] = {w["ticker"]: w for w in watchlist}
+
+# Show current watchlist as chips with added date + price
+_chip_parts = []
+for w in watchlist:
+    _t    = w["ticker"]
+    _d    = w.get("added_date") or ""
+    _p    = w.get("added_price")
+    _sub  = ""
+    if _d:
+        try:
+            _sub = date.fromisoformat(_d).strftime("%b %-d")
+        except Exception:
+            _sub = _d
+    if _p:
+        _sub = f"${_p:,.2f}" + (f" · {_sub}" if _sub else "")
+    _chip_parts.append(
         f"<span style='background:#1a1a2e; border:1px solid #4a90d9; "
         f"border-radius:12px; padding:3px 10px; font-size:0.85rem; "
-        f"font-weight:700; color:#4a90d9; margin-right:4px;'>{t}</span>"
-        for t in watchlist
-    ),
-    unsafe_allow_html=True,
-)
+        f"font-weight:700; color:#4a90d9; margin-right:4px;'>{_t}"
+        + (f"<span style='font-size:0.7rem; font-weight:400; color:#555; margin-left:5px;'>{_sub}</span>" if _sub else "")
+        + "</span>"
+    )
+st.markdown(" ".join(_chip_parts), unsafe_allow_html=True)
 st.write("")
 
 # ── Background scoring ─────────────────────────────────────────────────────────
@@ -269,6 +333,8 @@ _has_results = bool(
     or (_JOB.is_done() and _JOB.result())
 )
 
+_wl_tickers = [w["ticker"] for w in watchlist]
+
 btn1, btn2, btn3 = st.columns([2, 2, 1])
 
 score_now = btn1.button(
@@ -298,7 +364,7 @@ if score_now:
     _JOB.reset()
     t = threading.Thread(
         target=_run_watchlist_score,
-        args=(watchlist, _df_trades.copy() if not _df_trades.empty else pd.DataFrame()),
+        args=(_wl_tickers, _df_trades.copy() if not _df_trades.empty else pd.DataFrame()),
         daemon=True,
     )
     t.start()
@@ -363,6 +429,23 @@ for r in results:
     err      = r.get("error")
     price    = r.get("price")
     target   = r.get("analyst_target")
+
+    # ── Added-price tracker ────────────────────────────────────────────────────
+    _meta        = _wl_meta.get(r["ticker"], {})
+    _added_price = _meta.get("added_price")
+    _added_date  = _meta.get("added_date")
+    _since_pct   = None
+    if _added_price and price:
+        try:
+            _since_pct = (price - _added_price) / _added_price * 100
+        except Exception:
+            pass
+    _added_label = ""
+    if _added_date:
+        try:
+            _added_label = date.fromisoformat(_added_date).strftime("%b %-d, %Y")
+        except Exception:
+            _added_label = _added_date
     upside   = r.get("upside_pct")
     pred     = r.get("pred")
     pred_ci  = r.get("pred_ci")
@@ -403,6 +486,29 @@ for r in results:
             f"</div>",
             unsafe_allow_html=True,
         )
+        # Build "since added" HTML if we have the data
+        _since_html = ""
+        if _added_price:
+            _ap_str = f"${_added_price:,.2f}"
+            if _since_pct is not None:
+                _sc_col  = "#2ecc71" if _since_pct > 0 else "#e74c3c"
+                _sc_sign = "+" if _since_pct > 0 else ""
+                _since_html = (
+                    f"<div style='font-size:0.7rem; margin-top:3px; "
+                    f"background:#111; border-radius:4px; padding:3px 6px; display:inline-block;'>"
+                    f"<span style='color:#555;'>Added {_added_label or ''}:</span> "
+                    f"<span style='color:#aaa;'>{_ap_str}</span> "
+                    f"<span style='color:#555;'>→</span> "
+                    f"<span style='color:{_sc_col}; font-weight:700;'>"
+                    f"{_sc_sign}{_since_pct:.1f}%</span>"
+                    f"</div>"
+                )
+            else:
+                _since_html = (
+                    f"<div style='font-size:0.7rem; color:#555; margin-top:2px;'>"
+                    f"Added {_added_label}: {_ap_str}</div>"
+                )
+
         hc3.markdown(
             f"<div style='text-align:center;'>"
             f"<div style='font-size:1.1rem; font-weight:700;'>"
@@ -410,6 +516,7 @@ for r in results:
             + (f"<div style='font-size:0.72rem; color:#888;'>Target: ${target:.2f}</div>" if target else "")
             + (f"<div style='font-size:0.72rem; color:#2ecc71; font-weight:700;'>+{upside:.1f}% upside</div>" if upside and upside > 0 else
                f"<div style='font-size:0.72rem; color:#e74c3c;'>{upside:.1f}% downside</div>" if upside and upside < 0 else "")
+            + _since_html
             + "</div>",
             unsafe_allow_html=True,
         )
