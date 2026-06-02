@@ -16,6 +16,7 @@ except Exception:
     pass
 
 import json
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
@@ -410,48 +411,174 @@ with tab2:
             speaker   = item.get("speaker", "Trump family")
             title     = item.get("title", "")
             link      = item.get("link", "")
+            pub_raw   = item.get("pubDate", "")
+
+            # Parse pubDate → human-readable "May 29, 2:45 PM"
+            _time_str = ""
+            if pub_raw:
+                from datetime import datetime, timezone
+                for _fmt in (
+                    "%a, %d %b %Y %H:%M:%S %z",
+                    "%a, %d %b %Y %H:%M:%S GMT",
+                    "%Y-%m-%dT%H:%M:%S%z",
+                    "%Y-%m-%dT%H:%M:%SZ",
+                ):
+                    try:
+                        _dt = datetime.strptime(pub_raw.strip(), _fmt)
+                        # Convert to local time if timezone-aware
+                        try:
+                            import time as _time
+                            _local_offset = -_time.timezone / 3600
+                            _dt = _dt.astimezone()
+                        except Exception:
+                            pass
+                        _time_str = _dt.strftime("%-I:%M %p · %b %-d")
+                        break
+                    except ValueError:
+                        continue
 
             sent_col = "#2ecc71" if sent == "positive" else "#e74c3c" if sent == "negative" else "#888"
             sent_icon = "📈" if sent == "positive" else "📉" if sent == "negative" else "➖"
-            border_col = sent_col + "44"
+
+            # ── Theme-based sector impact ─────────────────────────────────────
+            # Detect news theme and show which stocks go UP/DOWN even if
+            # they aren't directly mentioned in the article.
+            _title_lower = title.lower()
+            _desc_lower  = (item.get("description") or "").lower()
+            _full        = _title_lower + " " + _desc_lower
+
+            # (pattern, label, up_tickers, down_tickers)
+            _THEME_RULES = [
+                ("tariff.{0,40}(steel|aluminum|copper)",
+                 "Steel/Metal Tariffs",
+                 ["X","NUE","STLD","CLF","AA"],
+                 ["F","GM","CAT","BA","DE","GE"]),
+                ("(oil|petroleum|crude|opec)",
+                 "Oil/Energy",
+                 ["XOM","CVX","COP","OXY","SLB"],
+                 ["DAL","UAL","AAL","FDX","UPS"]),
+                ("(interest rate|federal reserve|rate hike|rate cut|fed fund)",
+                 "Interest Rates",
+                 ["JPM","BAC","WFC","GS","MS"],
+                 ["AMZN","NFLX","SHOP","PLTR","SNOW"]),
+                ("(china|chinese).{0,30}tariff|tariff.{0,30}china",
+                 "China Tariffs",
+                 ["NUE","STLD","X","MLM","VMC"],
+                 ["AAPL","NVDA","QCOM","AMAT","MU"]),
+                ("(drug price|prescription drug|medicare.{0,20}negoti|pharma.{0,20}price)",
+                 "Drug Pricing",
+                 ["PFE","MRK","LLY","ABBV","AMGN"],
+                 ["CVS","WBA","UNH","CI","MCK"]),
+                ("(defense|military spend|pentagon|nato|weapon|missile|armed forces)",
+                 "Defense Spending",
+                 ["LMT","RTX","NOC","GD","BA","KTOS"],
+                 []),
+                ("(bitcoin|crypto|digital asset|blockchain).{0,40}(support|legal|approv|allow|reserve)",
+                 "Crypto Support",
+                 ["COIN","MSTR","RIOT","MARA"],
+                 []),
+                ("(ai|artificial intelligence|data center).{0,40}(invest|billion|fund|build|boost)",
+                 "AI Investment",
+                 ["NVDA","AMD","MSFT","GOOGL","AMZN","ORCL"],
+                 []),
+                ("(bank|financial|wall street).{0,30}(deregul|rule|regulat)",
+                 "Bank Deregulation",
+                 ["JPM","BAC","GS","MS","WFC","C"],
+                 []),
+                ("(solar|wind|renewable|clean energy|green)",
+                 "Clean Energy",
+                 ["ENPH","FSLR","NEE","SEDG"],
+                 ["XOM","CVX","COP"]),
+                ("(immigr|border|visa|work permit)",
+                 "Immigration",
+                 [],
+                 ["GOOGL","MSFT","AMZN","META","AAPL"]),
+                ("(housing|mortgage|real estate|hud)",
+                 "Housing",
+                 ["DHI","LEN","PHM","TOL","NVR"],
+                 ["RDFN","Z","OPEN"]),
+            ]
+
+            # Find matching themes
+            _matched_themes = []
+            for _pat, _label, _up, _down in _THEME_RULES:
+                if re.search(_pat, _full, re.I):
+                    _matched_themes.append((_label, _up[:4], _down[:4]))
+
+            def _impact_badge(t: str, direction: int) -> str:
+                if direction > 0:
+                    bg, border, col, arrow = "#0a2e14", "#2ecc71", "#2ecc71", "▲"
+                else:
+                    bg, border, col, arrow = "#2e0a0a", "#e74c3c", "#e74c3c", "▼"
+                return (
+                    f"<span style='background:{bg}; border:1px solid {border}; "
+                    f"border-radius:10px; padding:2px 8px; font-size:0.73rem; "
+                    f"font-weight:700; color:{col}; margin-right:4px; margin-bottom:3px; display:inline-block;'>"
+                    f"{arrow} {t}</span>"
+                )
+
+            # Build sector impact HTML
+            _sector_html = ""
+            for _label, _up, _down in _matched_themes:
+                _sector_html += (
+                    f"<div style='margin-top:7px;'>"
+                    f"<span style='font-size:0.68rem; color:#888; font-weight:600; "
+                    f"text-transform:uppercase; letter-spacing:0.5px; margin-right:6px;'>"
+                    f"📊 {_label}:</span>"
+                    + "".join(_impact_badge(t, 1)  for t in _up)
+                    + ("&nbsp;&nbsp;" if _up and _down else "")
+                    + "".join(_impact_badge(t, -1) for t in _down)
+                    + "</div>"
+                )
+            if _matched_themes:
+                _sector_html += (
+                    "<div style='margin-top:4px; font-size:0.65rem; color:#444;'>"
+                    "▲ sector tailwind &nbsp;·&nbsp; ▼ sector headwind &nbsp;·&nbsp; "
+                    "Based on historical patterns, not guaranteed</div>"
+                )
+
+            # Directly mentioned tickers (colour by overall sentiment)
+            _mentioned_html = ""
+            if tickers:
+                _dir = 1 if sent == "positive" else -1 if sent == "negative" else 0
+                _mentioned_html = (
+                    "<div style='margin-top:6px;'>"
+                    "<span style='font-size:0.68rem; color:#888; font-weight:600; margin-right:6px;'>MENTIONED:</span>"
+                    + "".join(
+                        _impact_badge(t, _dir) if _dir != 0 else
+                        f"<span style='background:#1a2a3a; border:1px solid #4a90d9; "
+                        f"border-radius:10px; padding:2px 8px; font-size:0.73rem; "
+                        f"font-weight:700; color:#4a90d9; margin-right:4px;'>● {t}</span>"
+                        for t in tickers
+                    )
+                    + "</div>"
+                )
 
             with st.container():
                 st.markdown(
                     f"<div style='border-left:3px solid {sent_col}; padding:10px 16px; "
                     f"background:#0d0d1a; border-radius:0 6px 6px 0; margin-bottom:8px;'>"
 
-                    # Speaker badge + sentiment
-                    f"<div style='display:flex; align-items:center; gap:8px; margin-bottom:4px;'>"
+                    # Speaker badge + sentiment + timestamp
+                    f"<div style='display:flex; align-items:center; gap:8px; margin-bottom:4px; flex-wrap:wrap;'>"
                     f"<span style='background:#1a1a2e; border:1px solid #333; border-radius:10px; "
                     f"padding:2px 8px; font-size:0.72rem; color:#aaa;'>🇺🇸 {speaker}</span>"
                     f"<span style='color:{sent_col}; font-size:0.75rem; font-weight:700;'>"
                     f"{sent_icon} {sent.upper()}</span>"
-                    f"</div>"
+                    + (f"<span style='color:#555; font-size:0.72rem;'>🕐 {_time_str}</span>" if _time_str else "")
+                    + "</div>"
 
                     # Headline
-                    f"<div style='font-size:0.92rem; font-weight:600; color:#e8e8e8; margin-bottom:6px;'>"
+                    + f"<div style='font-size:0.92rem; font-weight:600; color:#e8e8e8; margin-bottom:4px;'>"
                     + (f"<a href='{link}' target='_blank' style='color:#e8e8e8; text-decoration:none;'>{title}</a>"
                        if link else title)
                     + "</div>"
 
-                    # Mentioned tickers
-                    + (
-                        "<div style='margin-top:4px;'>"
-                        + "".join(
-                            f"<span style='background:#1a2a3a; border:1px solid #4a90d9; "
-                            f"border-radius:10px; padding:2px 8px; font-size:0.75rem; "
-                            f"font-weight:700; color:#4a90d9; margin-right:4px;'>{t}</span>"
-                            for t in tickers
-                        )
-                        + "".join(
-                            f"<span style='background:#1a1a1a; border:1px solid #555; "
-                            f"border-radius:10px; padding:2px 8px; font-size:0.72rem; "
-                            f"color:#888; margin-right:4px;'>{c}</span>"
-                            for c in companies[:3] if c.lower() not in {t.lower() for t in tickers}
-                        )
-                        + "</div>"
-                        if tickers or companies else ""
-                    )
+                    # Directly mentioned tickers
+                    + _mentioned_html
+
+                    # Sector impact (stocks not mentioned but affected by theme)
+                    + _sector_html
 
                     + "</div>",
                     unsafe_allow_html=True,

@@ -269,9 +269,9 @@ def get_political_signal(ticker: str, company_name: str = "") -> dict:
         def _alias_match(alias: str, text: str) -> bool:
             if not alias:
                 return False
-            if len(alias) <= 3:
-                return bool(re.search(r'\b' + re.escape(alias) + r'\b', text, re.I))
-            return alias in text
+            # Always use word boundaries — prevents "meta" matching "metal",
+            # "apple" matching "applet", "amazon" matching "amazonian", etc.
+            return bool(re.search(r'\b' + re.escape(alias) + r'\b', text, re.I))
 
         if not any(_alias_match(alias, text) for alias in aliases):
             continue
@@ -427,7 +427,8 @@ def get_trump_family_news_feed(hours: int = 48) -> list[dict]:
         for name, ticker in _COMPANY_TO_TICKER.items():
             if not name or len(name) <= 2:
                 continue
-            if name in text:
+            # Word-boundary match — prevents "meta" → "metal", "apple" → "applet", etc.
+            if re.search(r'\b' + re.escape(name) + r'\b', text, re.I):
                 if ticker and ticker not in found_tickers:
                     found_tickers.append(ticker)
                 if name.title() not in found_companies:

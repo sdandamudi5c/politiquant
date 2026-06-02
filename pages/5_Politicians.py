@@ -28,9 +28,14 @@ st.set_page_config(
 
 st.title("🏛️ Politicians")
 
+# Auto-switch to Profile view when arriving via a Profile → link
+_auto_profile = bool(st.query_params.get("politician", ""))
+_default_view_idx = 1 if _auto_profile else 0
+
 _pol_view = st.radio(
     "", ["🔍 Cross Reference", "👤 Politician Profile"],
     horizontal=True, label_visibility="collapsed", key="pol_view",
+    index=_default_view_idx,
 )
 st.divider()
 
@@ -445,9 +450,10 @@ if not _SHOWING_PROFILE:
                         unsafe_allow_html=True,
                     )
                     b_col2.page_link(
-                        "pages/6_Politician_Profile.py",
+                        "pages/5_Politicians.py",
                         label="Profile →",
                         help=f"View {b['name']}'s full profile",
+                        query_params={"politician": b["name"]},
                     )
 
             with exp_c2:
@@ -548,7 +554,7 @@ if df.empty:
     st.stop()
 
 party   = get_party(selected, _lookup)
-pstyle  = PARTY_STYLE.get(party, PARTY_STYLE["?"])
+pstyle  = _PARTY_STYLE.get(party, _PARTY_STYLE["?"])
 chamber = df["chamber"].iloc[0] if "chamber" in df.columns else "N/A"
 state   = df["state"].iloc[0]   if "state"   in df.columns else "N/A"
 

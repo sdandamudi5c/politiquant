@@ -170,7 +170,7 @@ def render():
                 # ── Progress bar ───────────────────────────────────────────────
                 # total=0 → unknown (job started without calling js.start() — old code)
                 _known_total   = total if total > 1 else None
-                _total_display = str(_known_total) if _known_total else "?"
+                _total_display = f"/{_known_total}" if _known_total else ""
 
                 # When total is unknown keep bar at ~60% — avoids the misleading
                 # "100% red" look that happens when done > 7250 fallback.
@@ -195,7 +195,7 @@ def render():
                         js.cancel()
                         st.rerun()
 
-                    st.progress(pct, text=f"{done}/{_total_display} · {clean}")
+                    st.progress(pct, text=f"{done}{_total_display} · {clean}")
                     _elapsed_str = f" · {elapsed}" if elapsed else ""
                     st.caption(f"⏱ Running{_elapsed_str}")
 
