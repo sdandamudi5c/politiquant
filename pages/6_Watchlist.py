@@ -491,22 +491,28 @@ for r in results:
         if _added_price:
             _ap_str = f"${_added_price:,.2f}"
             if _since_pct is not None:
-                _sc_col  = "#2ecc71" if _since_pct > 0 else "#e74c3c"
-                _sc_sign = "+" if _since_pct > 0 else ""
+                if _since_pct > 0:
+                    _sc_col, _sc_bg, _sc_sign, _arrow = "#2ecc71", "#0a2e14", "+", "▲"
+                elif _since_pct < 0:
+                    _sc_col, _sc_bg, _sc_sign, _arrow = "#e74c3c", "#2e0a0a", "", "▼"
+                else:
+                    _sc_col, _sc_bg, _sc_sign, _arrow = "#bbb", "#1a1a1a", "", "—"
                 _since_html = (
-                    f"<div style='font-size:0.7rem; margin-top:3px; "
-                    f"background:#111; border-radius:4px; padding:3px 6px; display:inline-block;'>"
-                    f"<span style='color:#555;'>Added {_added_label or ''}:</span> "
-                    f"<span style='color:#aaa;'>{_ap_str}</span> "
-                    f"<span style='color:#555;'>→</span> "
-                    f"<span style='color:{_sc_col}; font-weight:700;'>"
-                    f"{_sc_sign}{_since_pct:.1f}%</span>"
+                    f"<div style='margin-top:7px; font-size:0.74rem; color:#999;'>"
+                    f"Added {_added_label or ''} · "
+                    f"<b style='color:#ddd;'>{_ap_str}</b>"
+                    f"</div>"
+                    f"<div style='margin-top:4px; display:inline-block; "
+                    f"background:{_sc_bg}; border:1px solid {_sc_col}; "
+                    f"border-radius:10px; padding:2px 10px; "
+                    f"font-size:0.82rem; font-weight:800; color:{_sc_col};'>"
+                    f"{_arrow} {_sc_sign}{_since_pct:.1f}% since"
                     f"</div>"
                 )
             else:
                 _since_html = (
-                    f"<div style='font-size:0.7rem; color:#555; margin-top:2px;'>"
-                    f"Added {_added_label}: {_ap_str}</div>"
+                    f"<div style='font-size:0.74rem; color:#999; margin-top:7px;'>"
+                    f"Added {_added_label} · <b style='color:#ddd;'>{_ap_str}</b></div>"
                 )
 
         hc3.markdown(
