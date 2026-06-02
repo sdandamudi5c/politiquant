@@ -176,7 +176,7 @@ for w in watchlist:
         except Exception:
             _sub = _d
     if _p:
-        _sub = f"${_p:,.2f}" + (f" · {_sub}" if _sub else "")
+        _sub = f"&#36;{_p:,.2f}" + (f" · {_sub}" if _sub else "")
     _chip_parts.append(
         f"<span style='background:#1a1a2e; border:1px solid #4a90d9; "
         f"border-radius:12px; padding:3px 10px; font-size:0.85rem; "
@@ -489,7 +489,7 @@ for r in results:
         # Build "since added" HTML if we have the data
         _since_html = ""
         if _added_price:
-            _ap_str = f"${_added_price:,.2f}"
+            _ap_str = f"&#36;{_added_price:,.2f}"
             if _since_pct is not None:
                 if _since_pct > 0:
                     _sc_col, _sc_bg, _sc_sign, _arrow = "#2ecc71", "#0a2e14", "+", "▲"
@@ -518,8 +518,8 @@ for r in results:
         hc3.markdown(
             f"<div style='text-align:center;'>"
             f"<div style='font-size:1.1rem; font-weight:700;'>"
-            f"{'${:.2f}'.format(price) if price else '—'}</div>"
-            + (f"<div style='font-size:0.72rem; color:#888;'>Target: ${target:.2f}</div>" if target else "")
+            f"{'&#36;{:.2f}'.format(price) if price else '—'}</div>"
+            + (f"<div style='font-size:0.72rem; color:#888;'>Target: &#36;{target:.2f}</div>" if target else "")
             + (f"<div style='font-size:0.72rem; color:#2ecc71; font-weight:700;'>+{upside:.1f}% upside</div>" if upside and upside > 0 else
                f"<div style='font-size:0.72rem; color:#e74c3c;'>{upside:.1f}% downside</div>" if upside and upside < 0 else "")
             + _since_html
