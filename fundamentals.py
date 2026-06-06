@@ -72,11 +72,19 @@ def _pct_change(old: float, new: float) -> float | None:
     return (new - old) / abs(old) * 100
 
 
-def fetch_fundamentals(ticker: str) -> dict:
+def fetch_fundamentals(ticker: str, use_finnhub: bool = True) -> dict:
     """
     Fetch fundamental metrics for a single ticker.
     Returns a dict with all metrics needed for screening and display.
     Uses daily cache to avoid repeated yfinance calls.
+
+    use_finnhub: when False, the Finnhub enrichment block is skipped entirely —
+        the result is built from yfinance/Yahoo data only (no Finnhub network
+        calls, no 55/min rate-limit budget consumed). Used by the Tier-1 market
+        scan to score the whole universe fast. The result is tagged
+        finnhub_attempted=False so a later use_finnhub=True call (Tier 2) is NOT
+        served the Yahoo-only cache entry and will re-fetch to populate the
+        Finnhub layer.
     """
     today = date.today().isoformat()
 
@@ -91,6 +99,13 @@ def fetch_fundamentals(ticker: str) -> dict:
         )
     except Exception:
         _fresh = cached.get("cached_date") == today and cached.get("cache_version") == CACHE_VERSION
+    # A Yahoo-only cache entry (written by a use_finnhub=False Tier-1 scan) must
+    # NOT be served to a caller that wants Finnhub data — force a re-fetch so the
+    # Finnhub layer gets populated. Entries written before this flag existed
+    # default to True (they were always full fetches), so existing callers that
+    # rely on the 24h cache aren't pushed into a needless re-fetch.
+    if _fresh and use_finnhub and not cached.get("finnhub_attempted", True):
+        _fresh = False
     if _fresh:
         return cached
 
@@ -99,6 +114,10 @@ def fetch_fundamentals(ticker: str) -> dict:
         "cached_date": today,
         "cached_ts": __import__("datetime").datetime.utcnow().isoformat(),
         "cache_version": CACHE_VERSION,
+        # Whether this fetch ran in Finnhub-enabled mode. False = Yahoo-only
+        # (Tier-1 scan); used by the cache layer so Tier 2 won't reuse a
+        # Yahoo-only entry. See the use_finnhub note in the docstring.
+        "finnhub_attempted": use_finnhub,
         "error": None,
         # Screening metrics
         "total_return_5yr_pct":    None,
@@ -574,7 +593,7 @@ def fetch_fundamentals(ticker: str) -> dict:
                 _prev_no_coverage = _age < 7 * 86400
             except Exception:
                 pass
-        _should_try_finnhub = (_mktcap is None or _mktcap >= 10_000_000) and not _prev_no_coverage
+        _should_try_finnhub = use_finnhub and (_mktcap is None or _mktcap >= 10_000_000) and not _prev_no_coverage
 
         if _should_try_finnhub:
             try:

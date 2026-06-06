@@ -12,9 +12,25 @@ import streamlit as st
 from job_state import JobState
 
 _JOBS = {
-    "📈 Growth Report":   "growth_report",
-    "💼 Portfolio":        "portfolio",
+    "📈 Growth Report":      "growth_report",
+    "🔬 Finnhub Enrichment": "growth_report_enrich",   # Tier 2 of the market scan
+    "💼 Portfolio":           "portfolio",
 }
+
+
+def _result_count(result) -> "int | str":
+    """Best-effort item count for a finished job, across the result shapes we use."""
+    if isinstance(result, list):
+        return len(result)
+    if isinstance(result, dict):
+        if "rows" in result:
+            return len(result.get("rows") or [])
+        enr = result.get("enriched")              # Tier-2 enrichment job shape
+        if isinstance(enr, dict) and "count" in enr:
+            return enr.get("count", 0)
+        if "candidates" in result:
+            return result.get("candidates", 0)
+    return "?"
 
 
 def _elapsed(started_at: str) -> str:
@@ -200,9 +216,8 @@ def render():
                     st.caption(f"⏱ Running{_elapsed_str}")
 
             elif js.was_cancelled():
-                result    = js.result() or {}
                 completed = js.completed_at()
-                n = len(result.get("rows", [])) if isinstance(result, dict) else 0
+                n = _result_count(js.result() or {})
                 if not any_shown:
                     st.markdown("---")
                     st.markdown("**⚙️ Background Jobs**")
@@ -215,9 +230,7 @@ def render():
 
             elif js.is_done():
                 completed = js.completed_at()
-                result    = js.result()
-                n = len(result) if isinstance(result, list) else (
-                    len(result.get("rows", [])) if isinstance(result, dict) else "?")
+                n = _result_count(js.result())
                 if not any_shown:
                     st.markdown("---")
                     st.markdown("**⚙️ Background Jobs**")

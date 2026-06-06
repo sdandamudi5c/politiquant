@@ -429,46 +429,34 @@ def fetch_recommendation_trends(ticker: str, api_key: str = None) -> dict:
 
 def fetch_price_target(ticker: str, api_key: str = None) -> dict:
     """
-    GET /stock/price-target?symbol=X
+    DISABLED — /stock/price-target is a PAID Finnhub endpoint (403 on the free tier).
 
-    Returns the analyst price-target consensus: high, low, mean, median.
-    Used as a fallback / supplement when yfinance doesn't return a target.
+    This stub returns immediately WITHOUT making any network request, so it can
+    never hit the paid endpoint or consume a slot from the 55/min rate-limit
+    budget. Analyst price targets come from yfinance (targetMeanPrice) instead —
+    see fundamentals.py (result["analyst_target"] = info.get("targetMeanPrice")).
+
+    To re-enable on a paid plan, restore the GET /stock/price-target?symbol=X call
+    and parse targetHigh / targetLow / targetMean / targetMedian / lastUpdated.
 
     Returns
     -------
     {
-        "target_high":    float | None,
-        "target_low":     float | None,
-        "target_mean":    float | None,
-        "target_median":  float | None,
-        "last_updated":   str | None,
-        "error":          None | str,
+        "target_high":    None,
+        "target_low":     None,
+        "target_mean":    None,
+        "target_median":  None,
+        "last_updated":   None,
+        "error":          "price-target disabled (paid Finnhub endpoint)",
     }
     """
-    key = api_key or get_api_key()
-    _empty = {"target_high": None, "target_low": None,
-              "target_mean": None, "target_median": None, "last_updated": None}
-    if not key:
-        return {**_empty, "error": "No Finnhub API key"}
-
-    data = _get("stock/price-target", {"symbol": ticker.upper()}, key)
-    if isinstance(data, dict) and data.get("_error"):
-        return {**_empty, "error": data["_error"]}
-
-    if not isinstance(data, dict):
-        return {**_empty, "error": None}
-
-    def _fv(k):
-        v = data.get(k)
-        return float(v) if v else None
-
     return {
-        "target_high":    _fv("targetHigh"),
-        "target_low":     _fv("targetLow"),
-        "target_mean":    _fv("targetMean"),
-        "target_median":  _fv("targetMedian"),
-        "last_updated":   data.get("lastUpdated"),
-        "error":          None,
+        "target_high":   None,
+        "target_low":    None,
+        "target_mean":   None,
+        "target_median": None,
+        "last_updated":  None,
+        "error":         "price-target disabled (paid Finnhub endpoint)",
     }
 
 
@@ -565,7 +553,6 @@ def fetch_batch(tickers: list, api_key: str = None) -> dict:
             "earnings":         fetch_earnings_surprise(ticker,      api_key=key),
             "basic_financials": fetch_basic_financials(ticker,       api_key=key),
             "recommendation":   fetch_recommendation_trends(ticker,  api_key=key),
-            "price_target":     fetch_price_target(ticker,           api_key=key),
             "insider":          fetch_insider_transactions(ticker,   api_key=key),
         }
     return results
