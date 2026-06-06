@@ -591,6 +591,16 @@ if "fa_results" in st.session_state:
                         },
                     )
 
+            # ── Google News (on-demand — far wider aggregation than the built-in feeds) ──
+            st.divider()
+            import news_panel
+            with st.expander("📰 Latest News (Google)",
+                             expanded=news_panel.is_loaded(ticker, "fa")):
+                st.caption("Broad headline aggregation from Google News — many more "
+                           "publishers than the built-in feeds. Loads on demand.")
+                news_panel.render(ticker, data.get("company_name"), key_prefix="fa",
+                                  intro="Click to load the latest aggregated headlines for this stock.")
+
             # ── Google Trends ─────────────────────────────────────────────────
             st.divider()
             with st.expander("📈 Google Trends Interest", expanded=False):

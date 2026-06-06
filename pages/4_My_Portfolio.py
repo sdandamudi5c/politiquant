@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from fundamentals import fetch_fundamentals, fmt_large, fmt_pct, fmt_ratio
+import news_panel
 from scorer import score_stock_detailed, signal_label
 from score_history import predict_return
 from job_state import JobState
@@ -276,7 +277,7 @@ def _holding_card(r: dict, expanded: bool = True):
 
     with st.expander(
         f"{ticker}  —  {r['company']}  |  Score: {score:.0f}/100  |  {label}  |  {val_str}  ({pct_total:.1f}%)",
-        expanded=expanded,
+        expanded=expanded or news_panel.is_loaded(ticker, "pf"),   # stay open after loading news
     ):
         if r.get("error") and not r["current_price"]:
             st.error(f"Could not fetch data: {r['error']}")
@@ -330,11 +331,10 @@ def _holding_card(r: dict, expanded: bool = True):
             for reason in neg_r[:4]:
                 st.caption(reason)
 
-        headlines = (r.get("fund") or {}).get("recent_headlines", [])
-        if headlines:
-            with st.expander("📰 Recent news", expanded=False):
-                for h in headlines:
-                    st.caption(f"• {h}")
+        # Latest news (Google) — on-demand, far wider aggregation than the built-in feed
+        st.markdown("**📰 Latest News (Google)**")
+        news_panel.render(ticker, r.get("company"), key_prefix="pf", max_items=15,
+                          intro="Click to load broader Google News coverage for this holding.")
 
         if r["is_penny"]:
             st.warning(f"Penny stock (< $5) — high risk, low liquidity.")
