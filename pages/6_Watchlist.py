@@ -88,6 +88,33 @@ def _fetch_current_price(ticker: str) -> "float | None":
         return None
 
 
+def _live_price(ticker: str) -> "float | None":
+    """Real-time price via yfinance fast_info (lightweight quote endpoint).
+
+    The Watchlist scores on demand for only a handful of tickers, so we can
+    afford one live quote per card. We use this to OVERRIDE the current_price
+    that fetch_fundamentals() returns from its 24h SQLite cache — otherwise the
+    card shows a stale price and the "since added" return + analyst upside are
+    both computed off that stale value. Returns None on any error so the caller
+    can fall back to the cached price.
+    """
+    try:
+        import yfinance as yf
+        fi = yf.Ticker(ticker).fast_info
+        for getter in (lambda: fi["lastPrice"],
+                       lambda: fi.get("lastPrice"),
+                       lambda: fi.last_price):
+            try:
+                p = getter()
+                if p:
+                    return float(p)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = _load_watchlist()
 
@@ -221,7 +248,10 @@ def _run_watchlist_score(tickers: list[str], trades_df: pd.DataFrame):
             pred_n   = pred_raw[2] if pred_raw else None
             pred_acc = pred_raw[3] if pred_raw else None
 
-            cp     = fund.get("current_price")
+            # Override the 24h-cached current_price with a live quote so the
+            # card shows a real-time price and the "since added" / upside
+            # numbers aren't computed off a stale value. Falls back to cache.
+            cp     = _live_price(ticker) or fund.get("current_price")
             target = fund.get("analyst_target")
             try:
                 upside = (target - cp) / cp * 100 if target and cp else None
